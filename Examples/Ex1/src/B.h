@@ -16,6 +16,7 @@ class B
 {
  public:
   // hello
+  //  
   B();
 };
 #endif
