@@ -63,6 +63,9 @@ class RawPixelDecoder final : public PixelReader
   template <class DigitContainer, class ROFContainer>
   int fillDecodedDigits(DigitContainer& digits, ROFContainer& rofs);
 
+  template <class STATVEC>
+  void fillChipsStatus(STATVEC& chipStatus);
+
   template <class CalibContainer>
   void fillCalibData(CalibContainer& calib);
 
@@ -88,8 +91,11 @@ class RawPixelDecoder final : public PixelReader
   void setVerbosity(int v);
   int getVerbosity() const { return mVerbosity; }
 
+  void setAlwaysParseTrigger(bool v) { mAlwaysParseTrigger = v; }
+  bool getAlwaysParseTrigger() const { return mAlwaysParseTrigger; }
+
   void printReport(bool decstat = true, bool skipNoErr = true) const;
-  void produceRawDataDumps(int dump, const o2::framework::TimingInfo& tinfo);
+  size_t produceRawDataDumps(int dump, const o2::framework::TimingInfo& tinfo);
 
   void clearStat(bool resetRaw = false);
 
@@ -104,6 +110,9 @@ class RawPixelDecoder final : public PixelReader
   void setAllowEmptyROFs(bool v) { mAlloEmptyROFs = v; }
   bool getAllowEmptyROFs() const { return mAlloEmptyROFs; }
 
+  void setVerifyDecoder(bool v) { mVerifyDecoder = v; }
+  bool getVerifyDecoder() const { return mVerifyDecoder; }
+
   void setInstanceID(size_t i) { mInstanceID = i; }
   void setNInstances(size_t n) { mNInstances = n; }
   auto getInstanceID() const { return mInstanceID; }
@@ -117,6 +126,7 @@ class RawPixelDecoder final : public PixelReader
 
   void setSkipRampUpData(bool v = true) { mSkipRampUpData = v; }
   bool getSkipRampUpData() const { return mSkipRampUpData; }
+  auto getNROFsProcessed() const { return mROFCounter; }
 
   struct LinkEntry {
     int entry = -1;
@@ -124,6 +134,7 @@ class RawPixelDecoder final : public PixelReader
 
   uint16_t getSquashingDepth() { return 0; }
   bool doIRMajorityPoll();
+  bool isRampUpStage() const { return mROFRampUpStage; }
   void reset();
 
  private:
@@ -155,6 +166,8 @@ class RawPixelDecoder final : public PixelReader
   bool mAlloEmptyROFs = false;                                                        // do not skip empty ROFs
   bool mROFRampUpStage = false;                                                       // are we still in the ROF ramp up stage?
   bool mSkipRampUpData = false;
+  bool mVerifyDecoder = false;
+  bool mAlwaysParseTrigger = false;
   int mVerbosity = 0;
   int mNThreads = 1; // number of decoding threads
   // statistics
@@ -219,6 +232,22 @@ int RawPixelDecoder<ChipMappingMFT>::fillDecodedDigits(DigitContainer& digits, R
   rofs.emplace_back(mInteractionRecord, mROFCounter, ref, nFilled);
   mTimerFetchData.Stop();
   return nFilled;
+}
+
+///______________________________________________________________
+/// update status for every active chip
+template <class Mapping>
+template <class STATVEC>
+void RawPixelDecoder<Mapping>::fillChipsStatus(STATVEC& chipStatus)
+{
+  if (mInteractionRecord.isDummy() || mROFRampUpStage) {
+    return; // nothing was decoded
+  }
+  for (unsigned int iru = 0; iru < mRUDecodeVec.size(); iru++) {
+    for (auto chID : mRUDecodeVec[iru].seenChipIDs) {
+      chipStatus[chID] = 1;
+    }
+  }
 }
 
 ///______________________________________________________________

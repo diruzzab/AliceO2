@@ -51,9 +51,10 @@ typedef struct DownloaderRequestData {
   long timestamp;
   HeaderObjectPair_t hoPair;
   std::map<std::string, std::string>* headers;
+  std::string userAgent;
+  curl_slist* optionsList;
 
   std::function<bool(std::string)> localContentCallback;
-  bool errorflag = false;
 } DownloaderRequestData;
 #endif
 
@@ -85,6 +86,11 @@ curl_socket_t opensocketCallback(void* clientp, curlsocktype purpose, struct cur
  * @param handle Handle assigned to this callback.
  */
 void onUVClose(uv_handle_t* handle);
+
+enum DownloaderErrorLevel {
+  MINOR,
+  SEVERE
+};
 
 /// A class encapsulating and performing simple CURL requests in terms of a so-called CURL multi-handle.
 /// A multi-handle allows to use a connection pool (connection cache) in the CURL layer even
@@ -208,14 +214,29 @@ class CCDBDownloader
    */
   void runLoop(bool noWait);
 
+  /**
+   * Returns a message describing the transfer an it's result.
+   */
+  std::string prepareLogMessage(std::string host_url, std::string userAgent, const std::string& path, long ts, const std::map<std::string, std::string>* headers, long httpCode) const;
+
+  /**
+   * Leaves only the protocol and host part of the url, discrading path and metadata.
+   */
+  std::string trimHostUrl(std::string full_host_url) const;
+
  private:
+  /**
+   * Recognizes whether the address is a full url, or a partial one (like for example "/Task/Detector/1") and combines it with potentialHost if needed.
+   */
+  std::string prepareRedirectedURL(std::string address, std::string potentialHost) const;
+
   /**
    * Returns a vector of possible content locations based on the redirect headers.
    *
    * @param baseUrl Content path.
    * @param headerMap Map containing response headers.
    */
-  std::vector<std::string> getLocations(std::string baseUrl, std::multimap<std::string, std::string>* headerMap) const;
+  std::vector<std::string> getLocations(std::multimap<std::string, std::string>* headerMap) const;
 
   std::string mUserAgentId = "CCDBDownloader";
   /**
@@ -281,6 +302,7 @@ class CCDBDownloader
     int hostInd;
     int locInd;
     DownloaderRequestData* requestData;
+    curl_slist** options;
   } PerformData;
 #endif
 
@@ -293,14 +315,17 @@ class CCDBDownloader
   static void closesocketCallback(void* clientp, curl_socket_t item);
 
 #if !defined(__CINT__) && !defined(__MAKECINT__) && !defined(__ROOTCLING__) && !defined(__CLING__)
+  // Returns a new location string or an empty string if all locations under current host have been accessedd
+  std::string getNewLocation(PerformData* performData, std::vector<std::string>& locations) const;
+
   // Reschedules the transfer to be performed with a different host.
   void tryNewHost(PerformData* performData, CURL* easy_handle);
 
   // Retrieves content from either alien, cvmfs or local storage using a callback to CCDBApi.
-  void getLocalContent(PerformData* performData, std::string& newUrl, std::string& newLocation, bool& contentRetrieved, std::vector<std::string>& locations);
+  void getLocalContent(PerformData* performData, std::string& newLocation, bool& contentRetrieved, std::vector<std::string>& locations);
 
   // Continues a transfer via a http redirect.
-  void httpRedirect(PerformData* performData, std::string& newUrl, std::string& newLocation, CURL* easy_handle);
+  void httpRedirect(PerformData* performData, std::string& newLocation, CURL* easy_handle);
 
   // Continues a transfer via a redirect. The redirect can point to a local file, alien file or a http address.
   void followRedirect(PerformData* performData, CURL* easy_handle, std::vector<std::string>& locations, bool& rescheduled, bool& contentRetrieved);
@@ -403,6 +428,6 @@ typedef struct DataForClosingSocket {
   curl_socket_t socket;
 } DataForClosingSocket;
 
-} // namespace o2
+} // namespace o2::ccdb
 
 #endif // O2_CCDB_CCDBDOWNLOADER_H

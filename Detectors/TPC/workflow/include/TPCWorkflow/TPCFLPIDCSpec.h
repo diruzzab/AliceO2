@@ -177,15 +177,25 @@ class TPCFLPIDCDevice : public o2::framework::Task
   {
     const header::DataHeader::SubSpecificationType subSpec{cru << 7};
     const CRU cruTmp(cru);
-    std::pair<std::vector<float>, std::vector<unsigned int>> idcOne;
     const int integrationIntervalOffset = 0;
     const auto region = cruTmp.region();
     const unsigned int indexOffset = (cruTmp.sector() % SECTORSPERSIDE) * Mapper::getPadsInSector() + Mapper::GLOBALPADOFFSET[region]; // TODO get correct offset for TPCFLPIDCDeviceGroup case
     const auto nIDCsPerIntegrationInterval = Mapper::PADSPERREGION[region];
     const auto integrationIntervals = idc.size() / nIDCsPerIntegrationInterval;
+    std::vector<std::vector<float>> idcOneTmp(integrationIntervals);
+    for (auto& vec : idcOneTmp) {
+      vec.reserve(nIDCsPerIntegrationInterval);
+    }
+    IDCFactorization::calcIDCOne(idc, nIDCsPerIntegrationInterval, integrationIntervalOffset, indexOffset, cruTmp, idcOneTmp, &mIDCZero, mPadFlagsMap);
+
+    // calculate 1D-IDCs
+    std::pair<std::vector<float>, std::vector<unsigned int>> idcOne;
     idcOne.first.resize(integrationIntervals);
     idcOne.second.resize(integrationIntervals);
-    IDCFactorization::calcIDCOne(idc, nIDCsPerIntegrationInterval, integrationIntervalOffset, indexOffset, cruTmp, idcOne.first, idcOne.second, &mIDCZero, mPadFlagsMap);
+    for (int i = 0; i < integrationIntervals; ++i) {
+      idcOne.first[i] = std::accumulate(idcOneTmp[i].begin(), idcOneTmp[i].end(), 0);
+      idcOne.second[i] = idcOneTmp[i].size();
+    }
 
     // normalize to pad size
     std::transform(idcOne.first.begin(), idcOne.first.end(), idcOne.first.begin(), [normVal = Mapper::INVPADAREA[region]](auto& val) { return val * normVal; });
@@ -195,14 +205,14 @@ class TPCFLPIDCDevice : public o2::framework::Task
 
     fill1DIDCs(cru);
     LOGP(debug, "Sending 1D-IDCs to EPNs of size {} and weights of size {}", mOneDIDCs.first.size(), mOneDIDCs.second.size());
-    output.snapshot(Output{gDataOriginTPC, getDataDescription1DIDCEPN(), subSpec, Lifetime::Timeframe}, mOneDIDCs.first);
-    output.snapshot(Output{gDataOriginTPC, getDataDescription1DIDCEPNWeights(), subSpec, Lifetime::Timeframe}, mOneDIDCs.second);
+    output.snapshot(Output{gDataOriginTPC, getDataDescription1DIDCEPN(), subSpec}, mOneDIDCs.first);
+    output.snapshot(Output{gDataOriginTPC, getDataDescription1DIDCEPNWeights(), subSpec}, mOneDIDCs.second);
   }
 
   void sendOutput(DataAllocator& output, const uint32_t cru)
   {
     const header::DataHeader::SubSpecificationType subSpec{cru << 7};
-    output.adoptContainer(Output{gDataOriginTPC, getDataDescriptionIDCGroup(CRU(cru).side()), subSpec, Lifetime::Timeframe}, std::move(mIDCs[cru]));
+    output.adoptContainer(Output{gDataOriginTPC, getDataDescriptionIDCGroup(CRU(cru).side()), subSpec}, std::move(mIDCs[cru]));
   }
 
   void fill1DIDCs(const uint32_t cru)

@@ -115,6 +115,12 @@ GPUconstexpr() int CovarMap[kNParams][kNParams] = {{0, 1, 3, 6, 10},
 GPUconstexpr() int DiagMap[kNParams] = {0, 2, 5, 9, 14};
 
 constexpr float HugeF = o2::constants::math::VeryBig;
+constexpr float MaxPT = 100000.;                  // do not allow pTs exceeding this value (to avoid NANs)
+constexpr float MinPTInv = 1. / MaxPT;            // do not allow q/pTs less this value (to avoid NANs)
+constexpr float ELoss2EKinThreshInv = 1. / 0.025; // do not allow E.Loss correction step with dE/Ekin above the inverse of this value
+constexpr int MaxELossIter = 50;                  // max number of iteration for the ELoss to account for BB dependence on beta*gamma
+// uncomment this to enable correction for BB dependence on beta*gamma via BB derivative
+// #define _BB_NONCONST_CORR_
 
 template <typename value_T = float>
 class TrackParametrization
@@ -158,7 +164,7 @@ class TrackParametrization
   GPUd() value_t getCharge2Pt() const;
   GPUd() int getAbsCharge() const;
   GPUd() PID getPID() const;
-  GPUd() void setPID(const PID pid);
+  GPUd() void setPID(const PID pid, bool passCharge = false);
 
   /// calculate cos^2 and cos of track direction in rphi-tracking
   GPUd() value_t getCsp2() const;
@@ -191,6 +197,11 @@ class TrackParametrization
   GPUd() value_t getPInv() const;
   GPUd() value_t getP() const;
   GPUd() value_t getPt() const;
+  GPUd() value_t getE2() const;
+  GPUd() value_t getE() const;
+  GPUdi() static value_t getdEdxBB(value_t betagamma) { return BetheBlochSolid(betagamma); }
+  GPUdi() static value_t getdEdxBBOpt(value_t betagamma) { return BetheBlochSolidOpt(betagamma); }
+  GPUdi() static value_t getBetheBlochSolidDerivativeApprox(value_T dedx, value_T bg) { return BetheBlochSolidDerivative(dedx, bg); }
 
   GPUd() value_t getTheta() const;
   GPUd() value_t getEta() const;
@@ -205,10 +216,14 @@ class TrackParametrization
   GPUd() value_t getYAt(value_t xk, value_t b) const;
   GPUd() value_t getSnpAt(value_t xk, value_t b) const;
   GPUd() value_t getSnpAt(value_t alpha, value_t xk, value_t b) const;
+  GPUd() value_t getPhiAt(value_t xk, value_t b) const;
+  GPUd() value_t getPhiPosAt(value_t xk, value_t b) const;
+  GPUd() value_t getDCAYtoMV(value_t b, value_t xmv = 0.f, value_t ymv = 0.f, value_t zmv = 0.f) const;
+  GPUd() value_t getDCAZtoMV(value_t b, value_t xmv = 0.f, value_t ymv = 0.f, value_t zmv = 0.f) const;
   GPUd() math_utils::Point3D<value_t> getXYZGloAt(value_t xk, value_t b, bool& ok) const;
 
   // parameters manipulation
-  GPUd() bool correctForELoss(value_t xrho, bool anglecorr = false, value_t dedx = kCalcdEdxAuto);
+  GPUd() bool correctForELoss(value_t xrho, bool anglecorr = false);
   GPUd() bool rotateParam(value_t alpha);
   GPUd() bool propagateParamTo(value_t xk, value_t b);
   GPUd() bool propagateParamTo(value_t xk, const dim3_t& b);
@@ -228,8 +243,10 @@ class TrackParametrization
   GPUhd() void setUserField(uint16_t v);
 
   GPUd() void printParam() const;
+  GPUd() void printParamHexadecimal();
 #ifndef GPUCA_ALIGPUCODE
   std::string asString() const;
+  std::string asStringHexadecimal();
 #endif
 
   GPUd() void updateParam(value_t delta, int i);
@@ -368,10 +385,12 @@ GPUdi() PID TrackParametrization<value_T>::getPID() const
 
 //____________________________________________________________
 template <typename value_T>
-GPUdi() void TrackParametrization<value_T>::setPID(const PID pid)
+GPUdi() void TrackParametrization<value_T>::setPID(const PID pid, bool passCharge)
 {
   mPID = pid;
-  //  setAbsCharge(pid.getCharge()); // If needed, user should change the charge via corr. setter
+  if (passCharge) {
+    setAbsCharge(pid.getCharge()); // If needed, user should change the charge via corr. setter
+  }
 }
 
 //____________________________________________________________
@@ -541,7 +560,10 @@ template <typename value_T>
 GPUdi() auto TrackParametrization<value_T>::getPtInv() const -> value_t
 {
   // return the inverted track pT
-  const value_t ptInv = gpu::CAMath::Abs(mP[kQ2Pt]);
+  value_t ptInv = gpu::CAMath::Abs(mP[kQ2Pt]);
+  if (ptInv < MinPTInv) {
+    ptInv = MinPTInv;
+  }
   return (mAbsCharge > 1) ? ptInv / mAbsCharge : ptInv;
 }
 
@@ -550,8 +572,8 @@ template <typename value_T>
 GPUdi() auto TrackParametrization<value_T>::getP2Inv() const -> value_t
 {
   // return the inverted track momentum^2
-  const value_t p2 = mP[kQ2Pt] * mP[kQ2Pt] / (1.f + getTgl() * getTgl());
-  return (mAbsCharge > 1) ? p2 / (mAbsCharge * mAbsCharge) : p2;
+  value_t p2 = getPtInv();
+  return p2 * p2 / (1.f + getTgl() * getTgl());
 }
 
 //____________________________________________________________
@@ -559,17 +581,15 @@ template <typename value_T>
 GPUdi() auto TrackParametrization<value_T>::getP2() const -> value_t
 {
   // return the track momentum^2
-  const value_t p2inv = getP2Inv();
-  return (p2inv > o2::constants::math::Almost0) ? 1.f / p2inv : o2::constants::math::VeryBig;
+  return 1.f / getP2Inv(); // getP2Inv is protected against being 0, full charge accounted
 }
 
 //____________________________________________________________
 template <typename value_T>
 GPUdi() auto TrackParametrization<value_T>::getPInv() const -> value_t
 {
-  // return the inverted track momentum^2
-  const value_t pInv = gpu::CAMath::Abs(mP[kQ2Pt]) / gpu::CAMath::Sqrt(1.f + getTgl() * getTgl());
-  return (mAbsCharge > 1) ? pInv / mAbsCharge : pInv;
+  // return the inverted track momentum
+  return getPtInv() / gpu::CAMath::Sqrt(1.f + getTgl() * getTgl()); // getPtInv() is protected against being 0, full charge accounted
 }
 
 //____________________________________________________________
@@ -577,8 +597,23 @@ template <typename value_T>
 GPUdi() auto TrackParametrization<value_T>::getP() const -> value_t
 {
   // return the track momentum
-  const value_t pInv = getPInv();
-  return (pInv > o2::constants::math::Almost0) ? 1.f / pInv : o2::constants::math::VeryBig;
+  return 1.f / getPInv(); // getPInv is already protected against being 0
+}
+
+//____________________________________________________________
+template <typename value_T>
+GPUdi() auto TrackParametrization<value_T>::getE2() const -> value_t
+{
+  // return the track energy^2
+  return getP2() + getPID().getMass2();
+}
+
+//____________________________________________________________
+template <typename value_T>
+GPUdi() auto TrackParametrization<value_T>::getE() const -> value_t
+{
+  // return the track energy
+  return gpu::CAMath::Sqrt(getE2());
 }
 
 //____________________________________________________________
@@ -586,11 +621,7 @@ template <typename value_T>
 GPUdi() auto TrackParametrization<value_T>::getPt() const -> value_t
 {
   // return the track transverse momentum
-  value_t ptI = gpu::CAMath::Abs(mP[kQ2Pt]);
-  if (mAbsCharge > 1) {
-    ptI /= mAbsCharge;
-  }
-  return (ptI > o2::constants::math::Almost0) ? 1.f / ptI : o2::constants::math::VeryBig;
+  return 1.f / getPtInv(); // getPtInv is already protected against being 0
 }
 
 //____________________________________________________________
@@ -616,7 +647,7 @@ GPUdi() auto TrackParametrization<value_T>::getXYZGlo() const -> math_utils::Poi
 #else // mockup on GPU without ROOT
   float sina, cosa;
   gpu::CAMath::SinCos(getAlpha(), sina, cosa);
-  return math_utils::Point3D<value_t>(cosa * getX() + sina * getY(), cosa * getY() - sina * getX(), getZ());
+  return math_utils::Point3D<value_t>(cosa * getX() - sina * getY(), cosa * getY() + sina * getX(), getZ());
 #endif
 }
 
@@ -646,7 +677,7 @@ GPUdi() auto TrackParametrization<value_T>::getXYZGloAt(value_t xk, value_t b, b
 #else // mockup on GPU without ROOT
     float sina, cosa;
     gpu::CAMath::SinCos(getAlpha(), sina, cosa);
-    return math_utils::Point3D<value_t>(cosa * xk + sina * y, cosa * y - sina * xk, z);
+    return math_utils::Point3D<value_t>(cosa * xk - sina * y, cosa * y + sina * xk, z);
 #endif
   } else {
     return math_utils::Point3D<value_t>();

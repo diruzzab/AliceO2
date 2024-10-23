@@ -37,11 +37,16 @@ target_link_libraries(allsim
                                 O2::TRDSimulation
                                 O2::FV0Simulation
                                 O2::ZDCSimulation
+                                O2::FOCALSimulation
                                 $<$<BOOL:${ENABLE_UPGRADES}>:O2::Alice3DetectorsPassive>
                                 $<$<BOOL:${ENABLE_UPGRADES}>:O2::ITS3Simulation>
                                 $<$<BOOL:${ENABLE_UPGRADES}>:O2::TRKSimulation>
                                 $<$<BOOL:${ENABLE_UPGRADES}>:O2::FT3Simulation>
                                 $<$<BOOL:${ENABLE_UPGRADES}>:O2::FCTSimulation>
+                                $<$<BOOL:${ENABLE_UPGRADES}>:O2::IOTOFSimulation>
+                                $<$<BOOL:${ENABLE_UPGRADES}>:O2::RICHSimulation>
+                                $<$<BOOL:${ENABLE_UPGRADES}>:O2::ECalSimulation>
+                                $<$<BOOL:${ENABLE_UPGRADES}>:O2::MI3Simulation>
                                 O2::Generators)
 
 add_library(internal::allsim ALIAS allsim)
@@ -111,6 +116,11 @@ o2_add_executable(kine-publisher
                   SOURCES o2sim_kine_publisher.cxx
                   PUBLIC_LINK_LIBRARIES O2::Framework O2::SimulationDataFormat O2::Steer)
 
+o2_add_executable(dpl-eventgen
+                  COMPONENT_NAME sim
+                  SOURCES dpl_eventgen.cxx
+                  PUBLIC_LINK_LIBRARIES O2::Generators O2::Framework O2::SimulationDataFormat)
+
 o2_add_executable(hepmc-publisher
                   COMPONENT_NAME sim
                   SOURCES o2sim_hepmc_publisher.cxx
@@ -118,8 +128,19 @@ o2_add_executable(hepmc-publisher
 
 o2_add_executable(mctracks-to-aod
                   COMPONENT_NAME sim
-                  SOURCES o2sim_mctracks_to_aod.cxx
+                  SOURCES o2sim_mctracks_to_aod.cxx ../Detectors/AOD/src/AODMcProducerHelpers.cxx
                   PUBLIC_LINK_LIBRARIES O2::Framework O2::SimulationDataFormat)
+target_include_directories(O2exe-sim-mctracks-to-aod
+                           PRIVATE
+                          ../Detectors/AOD/include)
+
+o2_add_executable(mc-to-hepmc
+                  COMPONENT_NAME aod
+                  SOURCES o2aod_mc_to_hepmc.cxx
+                  PUBLIC_LINK_LIBRARIES
+                  O2::Framework
+                  O2::SimulationDataFormat
+                  O2::Generators)
 
 o2_add_dpl_workflow(mctracks-to-aod-simple-task
                     SOURCES SimExamples/McTracksToAOD/mctracks_to_aod_simple_task.cxx
@@ -127,6 +148,8 @@ o2_add_dpl_workflow(mctracks-to-aod-simple-task
                     COMPONENT_NAME Analysis)
 
 o2_data_file(COPY o2simtopology_template.json DESTINATION config)
+
+o2_data_file(COPY o2simdefaultdetectorlist.json DESTINATION config)
 
 # * # add a complex simulation as a unit test (if simulation was enabled)
 #   perform
@@ -215,6 +238,8 @@ o2_add_test(CheckStackG4
 set_tests_properties(o2sim_checksimkinematics_G4
                      PROPERTIES FIXTURES_REQUIRED G4)
 
+# GEANT3 simulation fails on Macs, so disable it.
+if(NOT APPLE)
 o2_add_test_command(NAME o2sim_G3
                     WORKING_DIRECTORY ${SIMTESTDIR}
                     COMMAND $<TARGET_FILE:${o2simExecutable}>
@@ -291,6 +316,7 @@ o2_add_test_command(NAME o2sim_G3_checklogs
 
 set_tests_properties(o2sim_G3_checklogs
                      PROPERTIES FIXTURES_REQUIRED G3)
+endif()
 
 # somewhat analyse the logfiles as another means to detect problems
 o2_add_test_command(NAME o2sim_G4_checklogs

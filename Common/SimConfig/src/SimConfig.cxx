@@ -10,6 +10,7 @@
 // or submit itself to any jurisdiction.
 
 #include <SimConfig/SimConfig.h>
+#include <SimConfig/DetectorLists.h>
 #include <DetectorsCommonDataFormats/DetID.h>
 #include <SimulationDataFormat/DigitizationContext.h>
 #include <boost/program_options.hpp>
@@ -23,8 +24,15 @@
 using namespace o2::conf;
 namespace bpo = boost::program_options;
 
-void SimConfig::initOptions(boost::program_options::options_description& options)
+void SimConfig::initOptions(boost::program_options::options_description& options, bool isUpgrade)
 {
+  // some default args might depend on whether Run3 or Run5
+  // can be updated here:
+  std::string defaultGeomList{"ALICE2"};
+  if (isUpgrade == true) {
+    defaultGeomList = "ALICE3";
+  }
+
   int nsimworkersdefault = std::max(1u, std::thread::hardware_concurrency() / 2);
   options.add_options()(
     "mcEngine,e", bpo::value<std::string>()->default_value("TGeant4"), "VMC backend to be used.")(
@@ -34,6 +42,14 @@ void SimConfig::initOptions(boost::program_options::options_description& options
     "skipModules", bpo::value<std::vector<std::string>>()->multitoken()->default_value(std::vector<std::string>({""}), ""), "list of modules excluded in geometry (precendence over -m")(
     "readoutDetectors", bpo::value<std::vector<std::string>>()->multitoken()->default_value(std::vector<std::string>(), ""), "list of detectors creating hits, all if not given; added to to active modules")(
     "skipReadoutDetectors", bpo::value<std::vector<std::string>>()->multitoken()->default_value(std::vector<std::string>(), ""), "list of detectors to skip hit creation (precendence over --readoutDetectors")(
+    "detectorList", bpo::value<std::string>()->default_value(defaultGeomList),
+    "Use a specific version of ALICE, e.g., a predefined list."
+    "There is an 'official' list provided with:"
+    "\nALICE2  : The default configuration for Run 3"
+    "\nALICE2.1: The future configuration for Run 4"
+    "\nALICE3  : The far-future configuration for Run 5-6"
+    "\nAdditionally one can provide their own custom list of modules which should be included in the geometry."
+    "\nBy specifiying LIST:JSONFILE where LIST is a list present in JSONFILE.")(
     "nEvents,n", bpo::value<unsigned int>()->default_value(0), "number of events")(
     "startEvent", bpo::value<unsigned int>()->default_value(0), "index of first event to be used (when applicable)")(
     "extKinFile", bpo::value<std::string>()->default_value("Kinematics.root"),
@@ -63,7 +79,7 @@ void SimConfig::initOptions(boost::program_options::options_description& options
   options.add_options()("fromCollContext", bpo::value<std::string>()->default_value(""), "Use a pregenerated collision context to infer number of events to simulate, how to embedd them, the vertex position etc. Takes precedence of other options such as \"--nEvents\".");
 }
 
-void SimConfig::determineActiveModules(std::vector<std::string> const& inputargs, std::vector<std::string> const& skippedModules, std::vector<std::string>& activeModules, bool mIsRun5)
+void SimConfig::determineActiveModules(std::vector<std::string> const& inputargs, std::vector<std::string> const& skippedModules, std::vector<std::string>& activeModules, bool isUpgrade)
 {
   using o2::detectors::DetID;
 
@@ -72,16 +88,31 @@ void SimConfig::determineActiveModules(std::vector<std::string> const& inputargs
   activeModules = inputargs;
 #ifdef ENABLE_UPGRADES
   if (activeModules[0] != "all") {
-    if (mIsRun5) {
+    if (isUpgrade) {
       for (int i = 0; i < activeModules.size(); ++i) {
-        if (activeModules[i] != "IT3" && activeModules[i] != "TRK" && activeModules[i] != "FT3" && activeModules[i] != "FCT" && activeModules[i] != "A3IP") {
-          LOGP(fatal, "List of active modules contains {}, which is not a run 5 module", activeModules[i]);
+        if (activeModules[i] != "A3IP" &&
+            activeModules[i] != "IT3" &&
+            activeModules[i] != "TRK" &&
+            activeModules[i] != "FT3" &&
+            activeModules[i] != "FCT" &&
+            activeModules[i] != "TF3" &&
+            activeModules[i] != "RCH" &&
+            activeModules[i] != "MI3" &&
+            activeModules[i] != "ECL") {
+          LOGP(fatal, "List of active modules contains {}, which is not a module from the upgrades.", activeModules[i]);
         }
       }
     }
-    if (!mIsRun5) {
+    if (!isUpgrade) {
       for (int i = 0; i < activeModules.size(); ++i) {
-        if (activeModules[i] == "TRK" || activeModules[i] == "FT3" || activeModules[i] == "FCT" || activeModules[i] == "A3IP") {
+        if (activeModules[i] == "A3IP" ||
+            activeModules[i] == "TRK" ||
+            activeModules[i] == "FT3" ||
+            activeModules[i] == "FCT" ||
+            activeModules[i] == "TF3" ||
+            activeModules[i] == "RCH" ||
+            activeModules[i] == "MI3" ||
+            activeModules[i] == "ECL") {
           LOGP(fatal, "List of active modules contains {}, which is not a run 3 module", activeModules[i]);
         }
       }
@@ -91,14 +122,21 @@ void SimConfig::determineActiveModules(std::vector<std::string> const& inputargs
   if (activeModules.size() == 1 && activeModules[0] == "all") {
     activeModules.clear();
 #ifdef ENABLE_UPGRADES
-    if (mIsRun5) {
+    if (isUpgrade) {
       for (int d = DetID::First; d <= DetID::Last; ++d) {
-        if (d == DetID::TRK || d == DetID::FT3 || d == DetID::FCT) {
+        if (d == DetID::TRK ||
+            d == DetID::FT3 ||
+            d == DetID::FCT ||
+            d == DetID::TF3 ||
+            d == DetID::RCH ||
+            d == DetID::ECL ||
+            d == DetID::MI3) {
           activeModules.emplace_back(DetID::getName(d));
         }
       }
       activeModules.emplace_back("A3IP");
       activeModules.emplace_back("A3ABSO");
+      activeModules.emplace_back("A3MAG");
     } else {
 #endif
       // add passive components manually (make a PassiveDetID for them!)
@@ -111,7 +149,7 @@ void SimConfig::determineActiveModules(std::vector<std::string> const& inputargs
       activeModules.emplace_back("SHIL");
       for (int d = DetID::First; d <= DetID::Last; ++d) {
 #ifdef ENABLE_UPGRADES
-        if (d != DetID::IT3 && d != DetID::TRK && d != DetID::FT3 && d != DetID::FCT) {
+        if (d != DetID::IT3 && d != DetID::TRK && d != DetID::FT3 && d != DetID::FCT && d != DetID::TF3 && d != DetID::RCH && d != DetID::ECL && d != DetID::MI3) {
           activeModules.emplace_back(DetID::getName(d));
         }
       }
@@ -120,14 +158,68 @@ void SimConfig::determineActiveModules(std::vector<std::string> const& inputargs
 #endif
     }
   }
-  // now we take out detectors listed as skipped
-  for (auto& s : skippedModules) {
-    auto iter = std::find(activeModules.begin(), activeModules.end(), s);
-    if (iter != activeModules.end()) {
-      // take it out
-      activeModules.erase(iter);
+  filterSkippedElements(activeModules, skippedModules);
+}
+
+bool SimConfig::determineActiveModulesList(const std::string& version, std::vector<std::string> const& inputargs, std::vector<std::string> const& skippedModules, std::vector<std::string>& activeModules)
+{
+  DetectorList_t modules;
+  DetectorMap_t map;
+  if (auto pos = version.find(':'); pos != std::string::npos) {
+    auto pversion = version.substr(0, pos);
+    auto ppath = version.substr(pos + 1);
+    if (!parseDetectorMapfromJSON(ppath, map)) {
+      LOGP(error, "Could not parse {}; check errors above!", ppath);
+      return false;
+    }
+    if (map.find(pversion) == map.end()) {
+      LOGP(error, "List {} is not defined in custom JSON file!", pversion);
+      printDetMap(map);
+      return false;
+    }
+    modules = map[pversion];
+    LOGP(info, "Running with version {} from custom detector list '{}'", pversion, ppath);
+  } else {
+    // Otherwise check 'official' versions which provided in config
+    auto o2env = std::getenv("O2_ROOT");
+    if (!o2env) {
+      LOGP(error, "O2_ROOT environment not defined");
+      return false;
+    }
+    const std::string rootpath(fmt::format("{}/share/config/o2simdefaultdetectorlist.json", o2env));
+    if (!parseDetectorMapfromJSON(rootpath, map)) {
+      LOGP(error, "Could not parse {} -> check errors above!", rootpath);
+      return false;
+    }
+    if (map.find(version) == map.end()) {
+      LOGP(error, "List {} is not defined in 'official' JSON file!", version);
+      printDetMap(map);
+      return false;
+    }
+    modules = map[version];
+    LOGP(info, "Running with official detector version '{}'", version);
+  }
+  // check if specified modules are in list
+  if (inputargs.size() != 1 || inputargs[0] != "all") {
+    std::vector<std::string> diff;
+    for (const auto& in : inputargs) {
+      if (std::find(modules.begin(), modules.end(), in) == std::end(modules)) {
+        diff.emplace_back(in);
+      }
+    }
+    if (!diff.empty()) {
+      LOGP(error, "Modules specified that are not present in detector list {}", version);
+      for (int j{0}; const auto& m : diff) {
+        LOGP(info, " - {: <2}. {}", j++, m);
+      }
+      printDetMap(map, version);
+      return false;
     }
   }
+  // Insert into active modules if module is built buy -m or insert all if default for -m is used ("all")
+  std::copy_if(modules.begin(), modules.end(), std::back_inserter(activeModules),
+               [&inputargs](const auto& e) { return (inputargs.size() == 1 && inputargs[0] == "all") || (std::find(inputargs.begin(), inputargs.end(), e) != inputargs.end()); });
+  return filterSkippedElements(activeModules, skippedModules);
 }
 
 void SimConfig::determineReadoutDetectors(std::vector<std::string> const& activeModules, std::vector<std::string> const& enableReadout, std::vector<std::string> const& disableReadout, std::vector<std::string>& readoutDetectors)
@@ -184,8 +276,15 @@ bool SimConfig::resetFromParsedMap(boost::program_options::variables_map const& 
   mConfigData.mMCEngine = vm["mcEngine"].as<std::string>();
   mConfigData.mNoGeant = vm["noGeant"].as<bool>();
 
-  // get final set of active Modules
-  determineActiveModules(vm["modules"].as<std::vector<std::string>>(), vm["skipModules"].as<std::vector<std::string>>(), mConfigData.mActiveModules, mConfigData.mIsRun5);
+  // Reset modules and detectors as they are anyway re-parsed
+  mConfigData.mReadoutDetectors.clear();
+  mConfigData.mActiveModules.clear();
+
+  // Get final set of active Modules
+  if (!determineActiveModulesList(vm["detectorList"].as<std::string>(), vm["modules"].as<std::vector<std::string>>(), vm["skipModules"].as<std::vector<std::string>>(), mConfigData.mActiveModules)) {
+    return false;
+  }
+
   if (mConfigData.mNoGeant) {
     // CAVE is all that's needed (and that will be built either way), so clear all modules and set the O2TrivialMCEngine
     mConfigData.mActiveModules.clear();
@@ -234,7 +333,17 @@ bool SimConfig::resetFromParsedMap(boost::program_options::variables_map const& 
     mConfigData.mFilterNoHitEvents = true;
   }
   mConfigData.mFromCollisionContext = vm["fromCollContext"].as<std::string>();
-  adjustFromCollContext();
+  // we decompose the argument to fetch
+  // (a) collision contextfilename
+  // (b) sim prefix to use from the context
+  auto pos = mConfigData.mFromCollisionContext.find(':');
+  std::string collcontextfile{mConfigData.mFromCollisionContext};
+  std::string simprefix{mConfigData.mOutputPrefix};
+  if (pos != std::string::npos) {
+    collcontextfile = mConfigData.mFromCollisionContext.substr(0, pos);
+    simprefix = mConfigData.mFromCollisionContext.substr(pos + 1);
+  }
+  adjustFromCollContext(collcontextfile, simprefix);
 
   // analyse vertex options
   if (!parseVertexModeString(vm["vertexMode"].as<std::string>(), mConfigData.mVertexMode)) {
@@ -244,9 +353,9 @@ bool SimConfig::resetFromParsedMap(boost::program_options::variables_map const& 
   // analyse field options
   // either: "ccdb" or +-2[U],+-5[U] and 0[U]; +-<intKGaus>U
   auto& fieldstring = vm["field"].as<std::string>();
-  std::regex re("(ccdb)|([+-]?[250]U?)");
+  std::regex re("(ccdb)|([+-]?(0|[2-9]|[12][0-9]|20)U?)");
   if (!std::regex_match(fieldstring, re)) {
-    LOG(error) << "Invalid field option";
+    LOG(error) << "Invalid field option " << fieldstring;
     return false;
   }
   if (fieldstring == "ccdb") {
@@ -285,9 +394,9 @@ bool SimConfig::parseFieldString(std::string const& fieldstring, int& fieldvalue
 {
   // analyse field options
   // either: "ccdb" or +-2[U],+-5[U] and 0[U]; +-<intKGaus>U
-  std::regex re("(ccdb)|([+-]?[250]U?)");
+  std::regex re("(ccdb)|([+-]?(0|[2-9]|[12][0-9]|20)U?)");
   if (!std::regex_match(fieldstring, re)) {
-    LOG(error) << "Invalid field option";
+    LOG(error) << "Invalid field option " << fieldstring;
     return false;
   }
   if (fieldstring == "ccdb") {
@@ -301,28 +410,60 @@ bool SimConfig::parseFieldString(std::string const& fieldstring, int& fieldvalue
   return true;
 }
 
-void SimConfig::adjustFromCollContext()
+bool SimConfig::filterSkippedElements(std::vector<std::string>& elements, std::vector<std::string> const& skipped)
+{
+  for (auto& s : skipped) {
+    if (s.empty()) { // nothing to skip here
+      continue;
+    }
+    auto iter = std::find(elements.begin(), elements.end(), s);
+    if (iter != elements.end()) {
+      // take it out
+      elements.erase(iter);
+    } else {
+      LOGP(error, "Skipped modules specified that are not present in built modules!");
+      LOGP(error, "Built modules:");
+      for (int j{0}; const auto& m : elements) {
+        LOGP(error, " + {: <2}. {}", j++, m);
+      }
+      std::vector<std::string> diff;
+      for (const auto& skip : skipped) {
+        if (std::find(elements.begin(), elements.end(), skip) == std::end(elements)) {
+          diff.emplace_back(skip);
+        }
+      }
+      LOGP(error, "Specified skipped modules not present in built modules:");
+      for (int j{0}; const auto& m : diff) {
+        LOGP(error, " - {: <2}. {}", j++, m);
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+void SimConfig::adjustFromCollContext(std::string const& collcontextfile, std::string const& prefix)
 {
   // When we use pregenerated collision contexts, some options
   // need to be auto-adjusted. Do so and inform about this in the logs.
-  if (mConfigData.mFromCollisionContext == "") {
+  if (collcontextfile == "") {
     return;
   }
 
-  auto context = o2::steer::DigitizationContext::loadFromFile(mConfigData.mFromCollisionContext);
+  auto context = o2::steer::DigitizationContext::loadFromFile(collcontextfile);
   if (context) {
     //  find the events belonging to a source that corresponds to a sim prefix
-    LOG(info) << "Looking up simprefixes " << mConfigData.mOutputPrefix;
-    int sourceid = context->findSimPrefix(mConfigData.mOutputPrefix);
+    LOG(info) << "Looking up simprefixes " << prefix;
+    int sourceid = context->findSimPrefix(prefix);
     if (sourceid == -1) {
-      LOG(error) << "Could not find collisions with sim prefix " << mConfigData.mOutputPrefix << " in the collision context. The collision contet specifies the following prefixes:";
-      for (auto& prefix : context->getSimPrefixes()) {
-        LOG(info) << prefix;
+      LOG(error) << "Could not find collisions with sim prefix " << prefix << " in the collision context. The collision context specifies the following prefixes:";
+      for (auto& sp : context->getSimPrefixes()) {
+        LOG(info) << sp;
       }
       LOG(fatal) << "Aborting due to prefix error";
     } else {
       auto collisionmap = context->getCollisionIndicesForSource(sourceid);
-      LOG(info) << "Found " << collisionmap.size() << " events in the collisioncontext for prefix " << mConfigData.mOutputPrefix;
+      LOG(info) << "Found " << collisionmap.size() << " events in the collisioncontext for prefix " << prefix;
 
       // check if collisionmap is dense (otherwise it will get screwed up with order/indexing in ROOT output)
       bool good = true;
@@ -346,19 +487,17 @@ void SimConfig::adjustFromCollContext()
       LOG(info) << "Setting number of events to simulate to " << mConfigData.mNEvents;
     }
   } else {
-    LOG(fatal) << "Could not open collision context file " << mConfigData.mFromCollisionContext;
+    LOG(fatal) << "Could not open collision context file " << collcontextfile;
   }
 }
 
 bool SimConfig::resetFromArguments(int argc, char* argv[])
 {
-  namespace bpo = boost::program_options;
-
   // Arguments parsing
   bpo::variables_map vm;
   bpo::options_description desc("Allowed options");
   desc.add_options()("help,h", "Produce help message.");
-  initOptions(desc);
+  initOptions(desc, mConfigData.mIsUpgrade);
 
   try {
     bpo::store(parse_command_line(argc, argv, desc), vm);

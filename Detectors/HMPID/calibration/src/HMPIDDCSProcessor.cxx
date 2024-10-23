@@ -395,7 +395,7 @@ double HMPIDDCSProcessor::calculatePhotonEnergy(int i)
   if (dp.id.get_type() == DeliveryType::DPVAL_DOUBLE) {
     lambda = o2::dcs::getValue<double>(dp);
   } else {
-    LOGP(warn, "DP type is {}", dp.id.get_type());
+    LOGP(warn, "DP type is {}", (int)dp.id.get_type());
     LOGP(warn, "Not correct datatype for HMP_TRANPLANT_MEASURE_{}_WAVELENGTH --> Default wavelength used for iteration procTrans{}", i, i);
     lambda = arrWaveLenDefault[i];
   }
@@ -708,6 +708,7 @@ std::unique_ptr<TF1> HMPIDDCSProcessor::finalizeHv(int iCh, int iSec)
     } else {
       (pHvTF).reset(new TF1(Form("HV%i%i", iCh, iSec), "[0]+x*[1]",
                             hvFirstTime, hvLastTime));
+      pGrHV->Fit(Form("HV%i%i", iCh, iSec), "Q"); // ef added
     }
   } else {
     LOGP(warn, "No entries in High Voltage for HV{}{}", iCh, iSec);

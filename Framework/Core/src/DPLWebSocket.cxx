@@ -152,12 +152,12 @@ struct GUIWebSocketHandler : public WebSocketHandler {
       }
       case GUIOpcodes::Keydown: {
         char key = *frame;
-        mContext.gui->plugin->keyDown(key);
+        mContext.gui->plugin->keyEvent(key, true);
         break;
       }
       case GUIOpcodes::Keyup: {
         char key = *frame;
-        mContext.gui->plugin->keyUp(key);
+        mContext.gui->plugin->keyEvent(key, false);
         break;
       }
       case GUIOpcodes::Charin: {
@@ -375,7 +375,7 @@ void WSDPLHandler::write(std::vector<uv_buf_t>& outputs)
 /// Helper to return an error
 void WSDPLHandler::error(int code, char const* message)
 {
-  static char const* errorFMT = "HTTP/1.1 {} {}\r\ncontent-type: text/plain\r\n\r\n{}: {}\r\n";
+  static constexpr auto errorFMT = "HTTP/1.1 {} {}\r\ncontent-type: text/plain\r\n\r\n{}: {}\r\n";
   std::string error = fmt::format(errorFMT, code, message, code, message);
   char* reply = strdup(error.data());
   uv_buf_t bfr = uv_buf_init(reply, error.size());

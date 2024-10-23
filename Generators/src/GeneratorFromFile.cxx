@@ -63,6 +63,13 @@ void GeneratorFromFile::SetStartEvent(int start)
 
 bool GeneratorFromFile::rejectOrFixKinematics(TParticle& p)
 {
+  // avoid compute if the particle is not known in the PDG database
+  if (!p.GetPDG()) {
+    LOG(warn) << "Particle with pdg " << p.GetPdgCode() << " not known in DB (not fixing mass)";
+    // still returning true here ... primary will be flagged as non-trackable by primary event generator
+    return true;
+  }
+
   const auto nominalmass = p.GetMass();
   auto mom2 = p.Px() * p.Px() + p.Py() * p.Py() + p.Pz() * p.Pz();
   auto calculatedmass = p.Energy() * p.Energy() - mom2;
@@ -181,8 +188,14 @@ GeneratorFromO2Kine::GeneratorFromO2Kine(const char* name)
     if (mEventBranch) {
       mEventsAvailable = mEventBranch->GetEntries();
       LOG(info) << "Found " << mEventsAvailable << " events in this file";
-      return;
     }
+    mMCHeaderBranch = tree->GetBranch("MCEventHeader.");
+    if (mMCHeaderBranch) {
+      LOG(info) << "Found " << mMCHeaderBranch->GetEntries() << " event-headers";
+    } else {
+      LOG(warn) << "No MCEventHeader branch found in kinematics input file";
+    }
+    return;
   }
   LOG(error) << "Problem reading events from file " << name;
 }
@@ -196,6 +209,7 @@ bool GeneratorFromO2Kine::Init()
   LOG(info) << param;
   mSkipNonTrackable = param.skipNonTrackable;
   mContinueMode = param.continueMode;
+  mRoundRobin = param.roundRobin;
 
   return true;
 }
@@ -221,6 +235,13 @@ bool GeneratorFromO2Kine::importParticles()
     std::vector<o2::MCTrack>* tracks = nullptr;
     mEventBranch->SetAddress(&tracks);
     mEventBranch->GetEntry(mEventCounter);
+
+    if (mMCHeaderBranch) {
+      o2::dataformats::MCEventHeader* mcheader = nullptr;
+      mMCHeaderBranch->SetAddress(&mcheader);
+      mMCHeaderBranch->GetEntry(mEventCounter);
+      mOrigMCEventHeader.reset(mcheader);
+    }
 
     for (auto& t : *tracks) {
 
@@ -259,6 +280,10 @@ bool GeneratorFromO2Kine::importParticles()
       particlecounter++;
     }
     mEventCounter++;
+    if (mRoundRobin) {
+      LOG(info) << "Resetting event counter to 0; Reusing events from file";
+      mEventCounter = mEventCounter % mEventsAvailable;
+    }
 
     if (tracks) {
       delete tracks;
@@ -276,11 +301,17 @@ void GeneratorFromO2Kine::updateHeader(o2::dataformats::MCEventHeader* eventHead
 {
   /** update header **/
 
-  // put information about input file and event number of the current event
+  // we forward the original header information if any
+  if (mOrigMCEventHeader.get()) {
+    eventHeader->copyInfoFrom(*mOrigMCEventHeader.get());
+  }
+  // we forward also the original basic vertex information contained in FairMCEventHeader
+  static_cast<FairMCEventHeader&>(*eventHeader) = static_cast<FairMCEventHeader&>(*mOrigMCEventHeader.get());
 
-  eventHeader->putInfo<std::string>("generator", "generatorFromO2Kine");
-  eventHeader->putInfo<std::string>("inputFile", mEventFile->GetName());
-  eventHeader->putInfo<int>("inputEventNumber", mEventCounter - 1);
+  // put additional information about input file and event number of the current event
+  eventHeader->putInfo<std::string>("forwarding-generator", "generatorFromO2Kine");
+  eventHeader->putInfo<std::string>("forwarding-generator_inputFile", mEventFile->GetName());
+  eventHeader->putInfo<int>("forwarding-generator_inputEventNumber", mEventCounter - 1);
 }
 
 } // namespace eventgen

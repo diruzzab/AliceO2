@@ -37,6 +37,7 @@ if [[ "0$FST_TMUX_NO_EPN" != "01" ]]; then
   [[ -z $NUMAGPUIDS ]] && export NUMAGPUIDS=1
   [[ -z $EPNPIPELINES ]] && export EPNPIPELINES=1
   [[ -z $O2_GPU_DOUBLE_PIPELINE ]] && export O2_GPU_DOUBLE_PIPELINE=1
+  [[ -z $O2_GPU_RTC ]] && export O2_GPU_RTC=1
   [[ -z $DPL_CONDITION_BACKEND ]] && export DPL_CONDITION_BACKEND="http://localhost:8084"
   export ALL_EXTRA_CONFIG="$ALL_EXTRA_CONFIG;NameConf.mCCDBServer=${DPL_CONDITION_BACKEND};"
   export GEN_TOPO_QC_OVERRIDE_CCDB_SERVER="${DPL_CONDITION_BACKEND}"
@@ -53,7 +54,6 @@ export SYNCMODE=1
 export SHMTHROW=0
 export IS_SIMULATED_DATA=1
 export DATADIST_NEW_DPL_CHAN=1
-export RANS_OPT="--ans-version 1.0 --ctf-dict none" # Use new RANS coding scheme without dictionary
 
 [[ -z $GEN_TOPO_MYDIR ]] && GEN_TOPO_MYDIR="$(dirname $(realpath $0))"
 source $GEN_TOPO_MYDIR/setenv.sh || { echo "setenv.sh failed" 1>&2 && exit 1; }
@@ -78,10 +78,10 @@ if [ $1 == "dd" ]; then
   export GPU_NUM_MEM_REG_CALLBACKS=$(($NUM_DPL_WORKFLOWS + 3))
 elif [ $1 == "tf" ]; then
   export CMD=tf-reader.sh
-  export GPU_NUM_MEM_REG_CALLBACKS=$((NUM_DPL_WORKFLOWS + 1))
+  export GPU_NUM_MEM_REG_CALLBACKS=$((NUM_DPL_WORKFLOWS + ${NUMAGPUIDS:-0}))
 elif [ $1 == "rr" ]; then
   export CMD=raw-reader.sh
-  export GPU_NUM_MEM_REG_CALLBACKS=$(($NUM_DPL_WORKFLOWS + 1))
+  export GPU_NUM_MEM_REG_CALLBACKS=$(($NUM_DPL_WORKFLOWS + ${NUMAGPUIDS:-0}))
 fi
 
 if [ "0$FST_TMUX_NOWAIT" != "01" ]; then
@@ -98,24 +98,16 @@ fi
 
 FST_SLEEP0=0
 FST_SLEEP1=0
-FST_SLEEP2=45
+FST_SLEEP2=30
 if [[ -z $SHM_MANAGER_SHMID ]]; then
   rm -f /dev/shm/*fmq*
   if [[ `ls /dev/shm/*fmq* 2> /dev/null | wc -l` != "0" ]]; then
     echo "FMQ SHM files left which cannot be deleted, please clean up!"
     exit 1
   fi
-else
-  FST_SLEEP0=0
-  FST_SLEEP1=0
-  FST_SLEEP2=30
 fi
 [[ ! -z $FST_TMUX_DD_WAIT ]] && FST_SLEEP2=$FST_TMUX_DD_WAIT
-
-if [[ ! -z $FST_TMUX_SINGLENUMA ]]; then
-  eval "FST_SLEEP$((FST_TMUX_SINGLENUMA ^ 1))=\"0; echo SKIPPED; sleep 1000; exit\""
-  export GPU_NUM_MEM_REG_CALLBACKS=$(($GPU_NUM_MEM_REG_CALLBACKS - 1))
-fi
+[[ ${O2_GPU_RTC:-0} == 1 ]] && FST_SLEEP2=60
 
 if workflow_has_parameter CALIB_PROXIES; then
   CALIB_COMMAND="$GEN_TOPO_MYDIR/aggregator-workflow.sh"

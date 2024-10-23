@@ -33,6 +33,7 @@
 #include <memory>
 #include <tuple>
 #include <type_traits>
+#include <concepts>
 
 namespace arrow
 {
@@ -462,10 +463,10 @@ struct CachedInsertion {
   int pos = 0;
 };
 
-template <size_t I, typename T, template <typename U> typename InsertionPolicy>
-struct BuilderHolder : InsertionPolicy<T> {
+template <size_t I, typename T, typename P>
+struct BuilderHolder : P {
   static constexpr size_t index = I;
-  using Policy = InsertionPolicy<T>;
+  using Policy = P;
   using ArrowType = typename detail::ConversionTraits<T>::ArrowType;
   using BuilderType = typename arrow::TypeTraits<ArrowType>::BuilderType;
 
@@ -562,60 +563,16 @@ template <class T, std::size_t N>
 struct is_bounded_array<std::array<T, N>> : std::true_type {
 };
 
-template <size_t I, typename T>
-struct HolderTrait {
+template <typename T>
+concept BulkInsertable = (std::integral<std::decay<T>> && !std::same_as<bool, std::decay_t<T>>);
 
-  using Holder = BuilderHolder<I, T, DirectInsertion>;
-};
-
-template <size_t I>
-struct HolderTrait<I, int8_t> {
-  using Holder = BuilderHolder<I, int8_t, CachedInsertion>;
-};
-
-template <size_t I>
-struct HolderTrait<I, uint8_t> {
-  using Holder = BuilderHolder<I, uint8_t, CachedInsertion>;
-};
-
-template <size_t I>
-struct HolderTrait<I, uint16_t> {
-  using Holder = BuilderHolder<I, uint16_t, CachedInsertion>;
-};
-
-template <size_t I>
-struct HolderTrait<I, int16_t> {
-  using Holder = BuilderHolder<I, int16_t, CachedInsertion>;
-};
-
-template <size_t I>
-struct HolderTrait<I, int> {
-  using Holder = BuilderHolder<I, int, CachedInsertion>;
-};
-
-template <size_t I>
-struct HolderTrait<I, float> {
-  using Holder = BuilderHolder<I, float, CachedInsertion>;
-};
-
-template <size_t I>
-struct HolderTrait<I, double> {
-  using Holder = BuilderHolder<I, double, CachedInsertion>;
-};
-
-template <size_t I>
-struct HolderTrait<I, unsigned int> {
-  using Holder = BuilderHolder<I, unsigned int, CachedInsertion>;
-};
-
-template <size_t I>
-struct HolderTrait<I, uint64_t> {
-  using Holder = BuilderHolder<I, uint64_t, CachedInsertion>;
-};
-
-template <size_t I>
-struct HolderTrait<I, int64_t> {
-  using Holder = BuilderHolder<I, int64_t, CachedInsertion>;
+template <typename T>
+struct InsertionTrait {
+  static consteval DirectInsertion<T> policy()
+    requires(!BulkInsertable<T>);
+  static consteval CachedInsertion<T> policy()
+    requires(BulkInsertable<T>);
+  using Policy = decltype(policy());
 };
 
 /// Helper function to convert a brace-initialisable struct to
@@ -641,44 +598,24 @@ auto constexpr to_tuple(T&& object) noexcept
   }
 }
 
-template <size_t I, typename... ARGS>
-constexpr auto makeHolderType(framework::pack<ARGS...>&&)
+template <typename... ARGS>
+constexpr auto makeHolderTypes()
 {
-  return typename HolderTrait<I, framework::pack_element_t<I, framework::pack<ARGS...>>>::Holder{arrow::default_memory_pool()};
-}
-
-template <size_t I, typename... ARGS>
-auto makeHolder(arrow::MemoryPool* pool, size_t nRows, framework::pack<ARGS...>&&)
-{
-  return typename HolderTrait<I, framework::pack_element_t<I, framework::pack<ARGS...>>>::Holder(pool, nRows);
-}
-
-template <size_t... Is, typename... ARGS>
-constexpr auto makeHolderTypesImpl(std::index_sequence<Is...>, framework::pack<ARGS...>&& pack)
-{
-  return std::tuple(makeHolderType<Is>(std::forward<framework::pack<ARGS...>>(pack))...);
-}
-
-template <size_t... Is, typename... ARGS>
-auto makeHoldersImpl(arrow::MemoryPool* pool, size_t nRows, std::index_sequence<Is...>, framework::pack<ARGS...>&& pack)
-{
-  return new std::tuple(makeHolder<Is>(pool, nRows, std::forward<framework::pack<ARGS...>>(pack))...);
+  return []<std::size_t... Is>(std::index_sequence<Is...>) {
+    return std::tuple(BuilderHolder<Is, ARGS, typename InsertionTrait<ARGS>::Policy>(arrow::default_memory_pool())...);
+  }(std::make_index_sequence<sizeof...(ARGS)>{});
 }
 
 template <typename... ARGS>
-constexpr auto makeHolderTypes(framework::pack<ARGS...>&& pack)
+auto makeHolders(arrow::MemoryPool* pool, size_t nRows)
 {
-  return makeHolderTypesImpl(std::make_index_sequence<sizeof...(ARGS)>{}, std::forward<framework::pack<ARGS...>>(pack));
+  return [pool, nRows]<std::size_t... Is>(std::index_sequence<Is...>) {
+    return new std::tuple(BuilderHolder<Is, ARGS, typename InsertionTrait<ARGS>::Policy>(pool, nRows)...);
+  }(std::make_index_sequence<sizeof...(ARGS)>{});
 }
 
 template <typename... ARGS>
-auto makeHolders(arrow::MemoryPool* pool, size_t nRows, framework::pack<ARGS...>&& pack)
-{
-  return makeHoldersImpl(pool, nRows, std::make_index_sequence<sizeof...(ARGS)>{}, std::forward<framework::pack<ARGS...>>(pack));
-}
-
-template <typename... ARGS>
-using IndexedHoldersTuple = decltype(makeHolderTypes(framework::pack<ARGS...>{}));
+using IndexedHoldersTuple = decltype(makeHolderTypes<ARGS...>());
 
 /// Helper class which creates a lambda suitable for building
 /// an arrow table from a tuple. This can be used, for example
@@ -688,10 +625,10 @@ class TableBuilder
   static void throwError(RuntimeErrorRef const& ref);
 
   template <typename... ARGS>
-  using HoldersTuple = typename std::tuple<typename HolderTrait<0, ARGS>::Holder...>;
+  using HoldersTuple = typename std::tuple<BuilderHolder<0, ARGS, typename InsertionTrait<ARGS>::Policy>...>;
 
   template <typename... ARGS>
-  using HoldersTupleIndexed = decltype(makeHolderTypes(framework::pack<ARGS...>{}));
+  using HoldersTupleIndexed = decltype(makeHolderTypes<ARGS...>());
 
   /// Get the builders, assumning they were created with a given pack
   ///  of basic types
@@ -708,7 +645,7 @@ class TableBuilder
   {
     mSchema = std::make_shared<arrow::Schema>(TableBuilderHelpers::makeFields<ARGS...>(columnNames));
 
-    mHolders = makeHolders(mMemoryPool, nRows, framework::pack<ARGS...>{});
+    mHolders = makeHolders<ARGS...>(mMemoryPool, nRows);
     mFinalizer = [](std::vector<std::shared_ptr<arrow::Array>>& arrays, void* holders) -> bool {
       return TableBuilderHelpers::finalize(arrays, *(HoldersTupleIndexed<ARGS...>*)holders);
     };
@@ -815,13 +752,17 @@ class TableBuilder
   template <typename T>
   auto cursor()
   {
-    return cursorHelper(typename T::table_t::persistent_columns_t{});
+    return [this]<typename... Cs>(pack<Cs...>) {
+      return this->template persist<typename Cs::type...>({Cs::columnLabel()...});
+    }(typename T::table_t::persistent_columns_t{});
   }
 
   template <typename T, typename E>
   auto cursor()
   {
-    return cursorHelper2<E>(typename T::table_t::persistent_columns_t{});
+    return [this]<typename... Cs>(pack<Cs...>) {
+      return this->template persist<E>({Cs::columnLabel()...});
+    }(typename T::table_t::persistent_columns_t{});
   }
 
   template <typename... ARGS, size_t NCOLUMNS = sizeof...(ARGS)>
@@ -881,21 +822,6 @@ class TableBuilder
   std::shared_ptr<arrow::Table> finalize();
 
  private:
-  /// Helper which actually creates the insertion cursor. Notice that the
-  /// template argument T is a o2::soa::Table which contains only the
-  /// persistent columns.
-  template <typename... Cs>
-  auto cursorHelper(framework::pack<Cs...>)
-  {
-    return this->template persist<typename Cs::type...>({Cs::columnLabel()...});
-  }
-
-  template <typename E, typename... Cs>
-  auto cursorHelper2(framework::pack<Cs...>)
-  {
-    return this->template persist<E>({Cs::columnLabel()...});
-  }
-
   bool (*mFinalizer)(std::vector<std::shared_ptr<arrow::Array>>& arrays, void* holders);
   void (*mDestructor)(void* holders);
   void* mHolders;
@@ -917,12 +843,12 @@ std::shared_ptr<arrow::Table> spawnerHelper(std::shared_ptr<arrow::Table>& fullT
                                             expressions::Projector* projectors, std::vector<std::shared_ptr<arrow::Field>> const& fields, const char* name);
 
 /// Expression-based column generator to materialize columns
-template <typename... C>
+template <o2::framework::OriginEnc ORIGIN, typename... C>
 auto spawner(framework::pack<C...> columns, std::vector<std::shared_ptr<arrow::Table>>&& tables, const char* name)
 {
   auto fullTable = soa::ArrowHelpers::joinTables(std::move(tables));
   if (fullTable->num_rows() == 0) {
-    return makeEmptyTable<soa::Table<C...>>(name);
+    return makeEmptyTable<soa::Table<ORIGIN, C...>>(name);
   }
   static auto fields = o2::soa::createFieldsFromColumns(columns);
   static auto new_schema = std::make_shared<arrow::Schema>(fields);

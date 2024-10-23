@@ -14,6 +14,7 @@ o2_add_library(DetectorsBase
                        src/GeometryManager.cxx
                        src/MaterialManager.cxx
                        src/MaterialManagerParam.cxx
+                       src/GeometryManagerParam.cxx
                        src/Propagator.cxx
                        src/MatLayerCyl.cxx
                        src/MatLayerCylSet.cxx
@@ -26,6 +27,7 @@ o2_add_library(DetectorsBase
                        src/GRPGeomHelper.cxx
                        src/Stack.cxx
                        src/VMCSeederService.cxx
+                       src/GlobalParams.cxx
                PUBLIC_LINK_LIBRARIES FairRoot::Base
                                      O2::CommonUtils
                                      O2::DetectorsCommonDataFormats
@@ -40,9 +42,9 @@ o2_add_library(DetectorsBase
                                      O2::SimulationDataFormat
                                      O2::SimConfig
                                      O2::CCDB
+                                     O2::GPUDataTypeHeaders
                                      MC::VMC
                                      TBB::tbb
-               PRIVATE_INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/GPU/GPUTracking/Merger # Must not link to avoid cyclic dependency
                              )
 
 o2_target_root_dictionary(DetectorsBase
@@ -50,6 +52,7 @@ o2_target_root_dictionary(DetectorsBase
                                   include/DetectorsBase/GeometryManager.h
                                   include/DetectorsBase/MaterialManager.h
                                   include/DetectorsBase/MaterialManagerParam.h
+                                  include/DetectorsBase/GeometryManagerParam.h
                                   include/DetectorsBase/Propagator.h
                                   include/DetectorsBase/Ray.h
                                   include/DetectorsBase/MatCell.h
@@ -57,17 +60,20 @@ o2_target_root_dictionary(DetectorsBase
                                   include/DetectorsBase/MatLayerCylSet.h
                                   include/DetectorsBase/Aligner.h
                                   include/DetectorsBase/Stack.h
-                                  include/DetectorsBase/SimFieldUtils.h)
+                                  include/DetectorsBase/SimFieldUtils.h
+                                  include/DetectorsBase/GlobalParams.h)
 
 if(BUILD_SIMULATION)
-  o2_add_test(
-    MatBudLUT
-    SOURCES test/testMatBudLUT.cxx
-    COMPONENT_NAME DetectorsBase
-    PUBLIC_LINK_LIBRARIES O2::DetectorsBase O2::ITSMFTReconstruction
-    LABELS detectorsbase
-    ENVIRONMENT O2_ROOT=${CMAKE_BINARY_DIR}/stage
+  if (NOT APPLE)
+    o2_add_test(
+      MatBudLUT
+      SOURCES test/testMatBudLUT.cxx
+      COMPONENT_NAME DetectorsBase
+      PUBLIC_LINK_LIBRARIES O2::DetectorsBase O2::ITSMFTReconstruction
+      LABELS detectorsbase
+      ENVIRONMENT O2_ROOT=${CMAKE_BINARY_DIR}/stage
                 VMCWORKDIR=${CMAKE_BINARY_DIR}/stage/${CMAKE_INSTALL_DATADIR})
+  endif()
 
   o2_add_test(
     MCStack

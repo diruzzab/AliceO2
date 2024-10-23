@@ -12,8 +12,11 @@
 o2_add_library(ITSPostprocessing
                SOURCES src/ImpactParameter.cxx
                        src/AvgClusSize.cxx
+                       src/PIDStudy.cxx
                        src/ITSStudiesConfigParam.cxx
+                       src/AnomalyStudy.cxx
                        src/TrackCheck.cxx
+                       src/TrackExtension.cxx
                        src/Helpers.cxx
                PUBLIC_LINK_LIBRARIES O2::GlobalTracking
                                      O2::GlobalTrackingWorkflowReaders

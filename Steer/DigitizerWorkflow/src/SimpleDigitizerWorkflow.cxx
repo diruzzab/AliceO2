@@ -158,6 +158,13 @@ void customize(std::vector<o2::framework::ConfigParamSpec>& workflowOptions)
   workflowOptions.push_back(
     ConfigParamSpec{"skipDet", VariantType::String, "none", {skiphelp}});
 
+  // especially useful if digit files are required later on in a simulation chain.
+  // so if --onlyDet <detlist> is set, one can then be sure to find all those digi files, especially those for which the detector
+  // hit files do not exist (e.g. because the detector was not readout during data taking)
+  std::string forceaccepthelp("Whether or not to always rely on accept/skip filters for detectors, independent of GRP content");
+  workflowOptions.push_back(
+    ConfigParamSpec{"forceSelectedDets", VariantType::Bool, false, {forceaccepthelp}});
+
   std::string onlyctxhelp("Produce only the digitization context; Don't actually digitize");
   workflowOptions.push_back(ConfigParamSpec{"only-context", o2::framework::VariantType::Bool, false, {onlyctxhelp}});
 
@@ -169,6 +176,7 @@ void customize(std::vector<o2::framework::ConfigParamSpec>& workflowOptions)
   // Option to write TPC digits internaly, without forwarding to a special writer instance.
   // This is useful in GRID productions with small available memory.
   workflowOptions.push_back(ConfigParamSpec{"tpc-chunked-writer", o2::framework::VariantType::Bool, false, {"Write independent TPC digit chunks as soon as they can be flushed."}});
+  workflowOptions.push_back(ConfigParamSpec{"tpc-distortion-type", o2::framework::VariantType::Int, 0, {"Simulate distortions in the TPC (0=no distortions, 1=distortions without scaling, 2=distortions with CTP scaling)"}});
 
   std::string simhelp("Comma separated list of simulation prefixes (for background, signal productions)");
   workflowOptions.push_back(
@@ -197,6 +205,9 @@ void customize(std::vector<o2::framework::ConfigParamSpec>& workflowOptions)
   // option to use/not use CCDB for EMCAL
   workflowOptions.push_back(ConfigParamSpec{"no-use-ccdb-emc", o2::framework::VariantType::Bool, false, {"Disable access to ccdb EMCAL simulation objects"}});
 
+  // option to require/not require CTP MB inputs in EMCAL
+  workflowOptions.push_back(ConfigParamSpec{"no-require-ctpinputs-emc", o2::framework::VariantType::Bool, false, {"Disable requirement of CTP min. bias inputs in EMCAL simulation"}});
+
   // option to use or not use the Trap Simulator after digitisation (debate of digitization or reconstruction is for others)
   workflowOptions.push_back(ConfigParamSpec{"disable-trd-trapsim", VariantType::Bool, false, {"disable the trap simulation of the TRD"}});
   workflowOptions.push_back(ConfigParamSpec{"trd-digit-downscaling", VariantType::Int, 1, {"only keep TRD digits for every n-th trigger"}});
@@ -217,6 +228,18 @@ void customize(std::vector<o2::framework::DispatchPolicy>& policies)
   policies.push_back({"prompt-for-simreader", matcher, DispatchOp::WhenReady});
 }
 
+void setTimingInfoInHeaders(o2::header::DataHeader& dh, o2::framework::DataProcessingHeader& dph)
+{
+  const auto& hbfu = o2::raw::HBFUtils::Instance();
+  const auto offset = int64_t(hbfu.getFirstIRofTF({0, hbfu.orbitFirstSampled}).orbit);
+  const auto increment = int64_t(hbfu.nHBFPerTF);
+  const auto startTime = hbfu.startTime;
+  const auto orbitFirst = hbfu.orbitFirst;
+  dh.firstTForbit = offset + increment * dh.tfCounter;
+  dh.runNumber = hbfu.runNumber;
+  dph.creation = startTime + (dh.firstTForbit - orbitFirst) * o2::constants::lhc::LHCOrbitMUS * 1.e-3;
+}
+
 void customize(std::vector<o2::framework::CallbacksPolicy>& policies)
 {
   // we customize the time information sent in DPL headers
@@ -228,17 +251,10 @@ void customize(std::vector<o2::framework::CallbacksPolicy>& policies)
       // simple linear enumeration from already updated HBFUtils (set via config key values)
       service.set<o2::framework::CallbackService::Id::NewTimeslice>(
         [](o2::header::DataHeader& dh, o2::framework::DataProcessingHeader& dph) {
-          const auto& hbfu = o2::raw::HBFUtils::Instance();
-          const auto offset = int64_t(hbfu.getFirstIRofTF({0, hbfu.orbitFirstSampled}).orbit);
-          const auto increment = int64_t(hbfu.nHBFPerTF);
-          const auto startTime = hbfu.startTime;
-          const auto orbitFirst = hbfu.orbitFirst;
-          dh.firstTForbit = offset + increment * dh.tfCounter;
-          LOG(info) << "Setting firstTForbit to " << dh.firstTForbit;
-          dh.runNumber = hbfu.runNumber;
-          LOG(info) << "Setting runNumber to " << dh.runNumber;
-          dph.creation = startTime + (dh.firstTForbit - orbitFirst) * o2::constants::lhc::LHCOrbitMUS * 1.e-3;
-          LOG(info) << "Setting timeframe creation time to " << dph.creation;
+          setTimingInfoInHeaders(dh, dph);
+          LOG(info) << "Setting DPL-header firstTForbit to " << dh.firstTForbit;
+          LOG(info) << "Setting DPL-header runNumber to " << dh.runNumber;
+          LOG(info) << "Setting DPL-header timeframe creation time to " << dph.creation;
         });
     }} // end of struct
   );
@@ -475,10 +491,16 @@ WorkflowSpec defineDataProcessing(ConfigContext const& configcontext)
     // init on a high level, the time for the CCDB queries
     // we expect that digitizers do not play with the manager themselves
     // this will only be needed until digitizers take CCDB objects via DPL mechanism
-    o2::ccdb::BasicCCDBManager::instance().setTimestamp(hbfu.startTime);
+
+    // fix the timestamp for CCDB manager in the same way as for DPL-CCDB-fetcher
+    o2::header::DataHeader dh;
+    o2::framework::DataProcessingHeader dph;
+    setTimingInfoInHeaders(dh, dph);
+    LOG(info) << "Setting timestamp of BasicCCDBManager to " << dph.creation;
+    o2::ccdb::BasicCCDBManager::instance().setTimestamp(dph.creation);
     // activate caching
-    o2::ccdb::BasicCCDBManager::instance().setCaching(false);
-    // without this, caching does not seem to work
+    o2::ccdb::BasicCCDBManager::instance().setCaching(true);
+    // this is asking the manager to check validity only locally - no further query to server done
     o2::ccdb::BasicCCDBManager::instance().setLocalObjectValidityChecking(true);
   }
   // update the digitization configuration with the right geometry file
@@ -543,13 +565,20 @@ WorkflowSpec defineDataProcessing(ConfigContext const& configcontext)
       return false;
     }
     auto accepted = accept(id);
+
+    // always comply with the filter choice?
+    auto forceAccepted = configcontext.options().get<bool>("forceSelectedDets");
     bool is_ingrp = isInGRPReadout(id);
+    // final decision on whether or not this detector will be digitized
+    auto isRun = accepted && (forceAccepted || is_ingrp);
     if (gIsMaster) {
       LOG(info) << id.getName()
                 << " is in grp? " << (is_ingrp ? "yes" : "no") << ";"
-                << " is skipped? " << (!accepted ? "yes" : "no");
+                << " is taken although not in grp? " << (!is_ingrp && (accepted && forceAccepted) ? "yes" : "no") << ";"
+                << " is skipped? " << (!accepted ? "yes" : "no") << ";"
+                << " is run? " << (isRun ? "yes" : "no");
     }
-    return accepted && is_ingrp;
+    return isRun;
   };
 
   std::vector<o2::detectors::DetID> detList; // list of participating detectors
@@ -568,7 +597,8 @@ WorkflowSpec defineDataProcessing(ConfigContext const& configcontext)
     detList.emplace_back(o2::detectors::DetID::TPC);
 
     auto internalwrite = configcontext.options().get<bool>("tpc-chunked-writer");
-    WorkflowSpec tpcPipelines = o2::tpc::getTPCDigitizerSpec(lanes, tpcsectors, mctruth, internalwrite);
+    auto distortionType = configcontext.options().get<int>("tpc-distortion-type");
+    WorkflowSpec tpcPipelines = o2::tpc::getTPCDigitizerSpec(lanes, tpcsectors, mctruth, internalwrite, distortionType);
     specs.insert(specs.end(), tpcPipelines.begin(), tpcPipelines.end());
 
     if (configcontext.options().get<std::string>("tpc-reco-type").empty() == false) {
@@ -651,9 +681,10 @@ WorkflowSpec defineDataProcessing(ConfigContext const& configcontext)
   // the EMCal part
   if (isEnabled(o2::detectors::DetID::EMC)) {
     auto useCCDB = !configcontext.options().get<bool>("no-use-ccdb-emc");
+    bool requireCTPInputs = !configcontext.options().get<bool>("no-require-ctpinputs-emc");
     detList.emplace_back(o2::detectors::DetID::EMC);
     // connect the EMCal digitization
-    digitizerSpecs.emplace_back(o2::emcal::getEMCALDigitizerSpec(fanoutsize++, mctruth, useCCDB));
+    digitizerSpecs.emplace_back(o2::emcal::getEMCALDigitizerSpec(fanoutsize++, requireCTPInputs, mctruth, useCCDB));
     // connect the EMCal digit writer
     writerSpecs.emplace_back(o2::emcal::getEMCALDigitWriterSpec(mctruth));
   }

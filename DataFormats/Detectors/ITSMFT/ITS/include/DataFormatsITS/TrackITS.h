@@ -35,7 +35,8 @@ namespace its
 class TrackITS : public o2::track::TrackParCov
 {
   enum UserBits {
-    kNextROF = 1
+    kNextROF = 1 << 28,
+    kSharedClusters = 1 << 29
   };
 
   using Cluster = o2::itsmft::Cluster;
@@ -92,16 +93,17 @@ class TrackITS : public o2::track::TrackParCov
 
   bool isBetter(const TrackITS& best, float maxChi2) const;
 
-  o2::track::TrackParCov& getParamIn() { return *this; }
-  const o2::track::TrackParCov& getParamIn() const { return *this; }
+  GPUhdi() o2::track::TrackParCov& getParamIn() { return *this; }
+  GPUhdi() const o2::track::TrackParCov& getParamIn() const { return *this; }
 
   GPUhdi() o2::track::TrackParCov& getParamOut() { return mParamOut; }
   GPUhdi() const o2::track::TrackParCov& getParamOut() const { return mParamOut; }
 
   GPUhdi() void setPattern(uint32_t p) { mPattern = p; }
   GPUhdi() uint32_t getPattern() const { return mPattern; }
-  bool hasHitOnLayer(int i) const { return mPattern & (0x1 << i); }
-  bool isFakeOnLayer(int i) const { return !(mPattern & (0x1 << (16 + i))); }
+  bool hasHitOnLayer(uint32_t i) const { return mPattern & (0x1 << i); }
+  bool isFakeOnLayer(uint32_t i) const { return !(mPattern & (0x1 << (16 + i))); }
+  bool isExtendedOnLayer(uint32_t i) const { return (mPattern & (0x1 << (24 + i))); } // only correct if getNClusters <= 8 on layers <= 8
   uint32_t getLastClusterLayer() const
   {
     uint32_t r{0}, v{mPattern & ((1 << 16) - 1)};
@@ -118,10 +120,12 @@ class TrackITS : public o2::track::TrackParCov
     }
     return s;
   }
-  int getNFakeClusters();
+  int getNFakeClusters() const;
 
-  void setNextROFbit(bool toggle = true) { setUserField((getUserField() & ~kNextROF) | (-toggle & kNextROF)); }
-  bool hasHitInNextROF() const { return getUserField() & kNextROF; }
+  void setNextROFbit(bool toggle = true) { mClusterSizes = toggle ? (mClusterSizes | kNextROF) : (mClusterSizes & ~kNextROF); }
+  bool hasHitInNextROF() const { return mClusterSizes & kNextROF; }
+  void setSharedClusters(bool toggle = true) { mClusterSizes = toggle ? (mClusterSizes | kSharedClusters) : (mClusterSizes & ~kSharedClusters); }
+  bool hasSharedClusters() const { return mClusterSizes & kSharedClusters; }
 
   void setClusterSize(int l, int size)
   {
@@ -137,7 +141,7 @@ class TrackITS : public o2::track::TrackParCov
 
   int getClusterSize(int l)
   {
-    if (l >= 8) {
+    if (l >= 7) {
       return 0;
     }
     return (mClusterSizes >> (l * 4)) & 0xf;

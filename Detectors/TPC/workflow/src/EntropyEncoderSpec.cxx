@@ -22,6 +22,7 @@
 #include "Headers/DataHeader.h"
 #include "TPCReconstruction/TPCFastTransformHelperO2.h"
 #include "GPUO2InterfaceConfiguration.h"
+#include "GPUO2InterfaceUtils.h"
 #include "GPUParam.h"
 #include "DataFormatsTPC/ClusterNative.h"
 #include "TPCClusterDecompressor.inc"
@@ -68,18 +69,9 @@ void EntropyEncoderSpec::init(o2::framework::InitContext& ic)
   mCTFCoder.init<CTF>(ic);
   mCTFCoder.setCombineColumns(!ic.options().get<bool>("no-ctf-columns-combining"));
 
-  mConfig.reset(new o2::gpu::GPUO2InterfaceConfiguration);
-  mConfig->configGRP.solenoidBz = 0;
-  mConfParam.reset(new o2::gpu::GPUSettingsO2(mConfig->ReadConfigurableParam()));
-  mAutoContinuousMaxTimeBin = mConfig->configGRP.continuousMaxTimeBin == -1;
-  if (mAutoContinuousMaxTimeBin) {
-    mConfig->configGRP.continuousMaxTimeBin = (256 * o2::constants::lhc::LHCMaxBunches + 2 * o2::tpc::constants::LHCBCPERTIMEBIN - 2) / o2::tpc::constants::LHCBCPERTIMEBIN;
-  }
-
   mFastTransform = std::move(TPCFastTransformHelperO2::instance()->create(0));
 
-  mParam.reset(new o2::gpu::GPUParam);
-  mParam->SetDefaults(&mConfig->configGRP, &mConfig->configReconstruction, &mConfig->configProcessing, nullptr);
+  mParam = GPUO2InterfaceUtils::getFullParam(0.f, 0, &mConfig, &mConfParam, &mAutoContinuousMaxTimeBin);
 
   if (mSelIR) {
     mTPCVDriftHelper.reset(new VDriftHelper);
@@ -101,7 +93,7 @@ void EntropyEncoderSpec::run(ProcessingContext& pc)
     }
 
     mConfig->configGRP.continuousMaxTimeBin = (GRPGeomHelper::instance().getGRPECS()->getNHBFPerTF() * o2::constants::lhc::LHCMaxBunches + 2 * o2::tpc::constants::LHCBCPERTIMEBIN - 2) / o2::tpc::constants::LHCBCPERTIMEBIN;
-    mConfig->configGRP.solenoidBz = (5.00668f / 30000.f) * GRPGeomHelper::instance().getGRPMagField()->getL3Current();
+    mConfig->configGRP.solenoidBzNominalGPU = GPUO2InterfaceUtils::getNominalGPUBz(*GRPGeomHelper::instance().getGRPMagField());
     mParam->UpdateSettings(&mConfig->configGRP);
 
     mTPCVDriftHelper->extractCCDBInputs(pc);
@@ -133,7 +125,7 @@ void EntropyEncoderSpec::run(ProcessingContext& pc)
   auto triggers = pc.inputs().get<gsl::span<o2::tpc::TriggerInfoDLBZS>>("trigger");
   auto cput = mTimer.CpuTime();
   mTimer.Start(false);
-  auto& buffer = pc.outputs().make<std::vector<o2::ctf::BufferType>>(Output{"TPC", "CTFDATA", 0, Lifetime::Timeframe});
+  auto& buffer = pc.outputs().make<std::vector<o2::ctf::BufferType>>(Output{"TPC", "CTFDATA", 0});
   std::vector<bool> rejectHits, rejectTracks, rejectTrackHits, rejectTrackHitsReduced;
   CompressedClusters clustersFiltered = clusters;
   std::vector<std::pair<std::vector<unsigned int>, std::vector<unsigned short>>> tmpBuffer(std::max<int>(mNThreads, 1));
@@ -156,7 +148,7 @@ void EntropyEncoderSpec::run(ProcessingContext& pc)
     if (clusters.nTracks && clusters.solenoidBz != -1e6f && clusters.solenoidBz != mParam->bzkG) {
       throw std::runtime_error("Configured solenoid Bz does not match value used for track model encoding");
     }
-    if (clusters.nTracks && clusters.maxTimeBin != -1e6 && clusters.maxTimeBin != mParam->par.continuousMaxTimeBin) {
+    if (clusters.nTracks && clusters.maxTimeBin != -1e6 && clusters.maxTimeBin != mParam->continuousMaxTimeBin) {
       throw std::runtime_error("Configured max time bin does not match value used for track model encoding");
     }
     mCTFCoder.setSelectedIRFrames(pc.inputs().get<gsl::span<o2::dataformats::IRFrame>>("selIRFrames"));
@@ -170,7 +162,7 @@ void EntropyEncoderSpec::run(ProcessingContext& pc)
     const float totalT = std::max(mFastTransform->getMaxDriftTime(0), mFastTransform->getMaxDriftTime(GPUCA_NSLICES / 2));
 
     unsigned int offset = 0, lasti = 0;
-    const unsigned int maxTime = (mParam->par.continuousMaxTimeBin + 1) * o2::tpc::ClusterNative::scaleTimePacked - 1;
+    const unsigned int maxTime = (mParam->continuousMaxTimeBin + 1) * o2::tpc::ClusterNative::scaleTimePacked - 1;
 #ifdef WITH_OPENMP
 #pragma omp parallel for firstprivate(offset, lasti) num_threads(mNThreads)
 #endif

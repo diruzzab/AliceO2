@@ -9,10 +9,6 @@
 # granted to it by virtue of its status as an Intergovernmental Organization
 # or submit itself to any jurisdiction.
 
-if(pythia6_FOUND)
-  set(pythia6Target ROOT::EGPythia6 MC::Pythia6)
-endif()
-
 if(pythia_FOUND)
   set(pythiaTarget MC::Pythia)
 endif()
@@ -36,28 +32,26 @@ o2_add_library(Generators
                        src/TriggerExternalParam.cxx
                        src/TriggerParticleParam.cxx
                        src/BoxGunParam.cxx
+                       src/BoxGenerator.cxx
                        src/QEDGenParam.cxx
                        src/GenCosmicsParam.cxx
                        src/GeneratorFactory.cxx
                        src/GeneratorGeantinos.cxx
                        src/GeneratorTParticle.cxx
                        src/GeneratorTParticleParam.cxx
-                       $<$<BOOL:${pythia6_FOUND}>:src/GeneratorPythia6.cxx>
-                       $<$<BOOL:${pythia6_FOUND}>:src/GeneratorPythia6Param.cxx>
+                       src/GeneratorService.cxx
+                       src/FlowMapper.cxx
                        $<$<BOOL:${pythia_FOUND}>:src/GeneratorPythia8.cxx>
                        $<$<BOOL:${pythia_FOUND}>:src/DecayerPythia8.cxx>
                        $<$<BOOL:${pythia_FOUND}>:src/GeneratorPythia8Param.cxx>
                        $<$<BOOL:${pythia_FOUND}>:src/DecayerPythia8Param.cxx>
                        $<$<BOOL:${HepMC3_FOUND}>:src/GeneratorHepMC.cxx>
                        $<$<BOOL:${HepMC3_FOUND}>:src/GeneratorHepMCParam.cxx>
+                       $<$<BOOL:${HepMC3_FOUND}>:src/AODToHepMC.cxx>
                PUBLIC_LINK_LIBRARIES FairRoot::Base O2::SimConfig O2::CommonUtils O2::DetectorsBase O2::ZDCBase
-                                     O2::SimulationDataFormat ${pythia6Target} ${pythiaTarget} ${hepmcTarget}
+                                     O2::SimulationDataFormat ${pythiaTarget} ${hepmcTarget}
                                      FairRoot::Gen
                TARGETVARNAME targetName)
-
-if(pythia6_FOUND)
-  target_compile_definitions(${targetName} PUBLIC GENERATORS_WITH_PYTHIA6)
-endif()
 
 if(pythia_FOUND)
   target_compile_definitions(${targetName} PUBLIC GENERATORS_WITH_PYTHIA8)
@@ -87,12 +81,10 @@ set(headers
     include/Generators/GeneratorGeantinos.h
     include/Generators/GeneratorTParticle.h
     include/Generators/GeneratorTParticleParam.h
+    include/Generators/GeneratorService.h
+    include/Generators/BoxGenerator.h
+    include/Generators/FlowMapper.h
     )
-
-if (pythia6_FOUND)
-   list(APPEND headers include/Generators/GeneratorPythia6.h
-                       include/Generators/GeneratorPythia6Param.h)
-endif()
 
 if(pythia_FOUND)
   list(APPEND headers
@@ -113,11 +105,6 @@ o2_target_root_dictionary(Generators HEADERS ${headers})
 o2_add_test_root_macro(share/external/extgen.C
                        PUBLIC_LINK_LIBRARIES O2::Generators FairRoot::Base
                        LABELS generators COMPILE_ONLY)
-if(pythia6_FOUND)
-  o2_add_test_root_macro(share/external/pythia6.C
-                         PUBLIC_LINK_LIBRARIES O2::Generators
-                         LABELS generators COMPILE_ONLY)
-endif()
 
 if(doBuildSimulation)
   o2_add_test_root_macro(share/external/QEDLoader.C
@@ -129,6 +116,12 @@ if(doBuildSimulation)
                          PUBLIC_LINK_LIBRARIES O2::Generators
                                                O2::SimConfig
                                                LABELS generators)
+
+  o2_add_test(GeneratorService NAME test_Generator_test_GeneratorService
+              SOURCES test/test_GeneratorService.cxx
+              COMPONENT_NAME Generator
+              LABELS generator
+              PUBLIC_LINK_LIBRARIES O2::Generators)
 endif()
 
 o2_add_test_root_macro(share/external/tgenerator.C

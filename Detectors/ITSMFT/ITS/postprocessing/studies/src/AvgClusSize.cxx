@@ -266,7 +266,7 @@ void AvgClusSizeStudy::prepareOutput()
 
 void AvgClusSizeStudy::setStyle()
 {
-  gStyle->SetPalette(kRainbow);
+  gStyle->SetPalette(kRainBow);
   std::vector<int> colors = {1, 2, 3, 4, 6, 7, 41, 47};
   std::vector<int> markers = {2, 3, 4, 5, 25, 26, 27, 28, 32};
   for (int i = 0; i < mAvgClusSizeCEtaVec.size(); i++) {
@@ -653,8 +653,8 @@ DataProcessorSpec getAvgClusSizeStudy(mask_t srcTracksMask, mask_t srcClustersMa
   dataRequest->requestTracks(srcTracksMask, useMC);
   dataRequest->requestClusters(srcClustersMask, useMC);
   dataRequest->requestSecondaryVertices(useMC);
-  dataRequest->requestPrimaryVertertices(useMC); // NOTE: may be necessary to use requestPrimaryVerterticesTMP()...
-  // dataRequest->requestPrimaryVerterticesTMP(useMC);
+  dataRequest->requestPrimaryVertices(useMC); // NOTE: may be necessary to use requestPrimaryVerticesTMP()...
+  // dataRequest->requestPrimaryVerticesTMP(useMC);
 
   auto ggRequest = std::make_shared<o2::base::GRPGeomRequest>(false,                             // orbitResetTime
                                                               true,                              // GRPECS=true

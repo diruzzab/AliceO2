@@ -52,21 +52,22 @@ class TrackerTraits
   virtual ~TrackerTraits() = default;
   virtual void adoptTimeFrame(TimeFrame* tf);
   virtual void initialiseTimeFrame(const int iteration);
-  virtual void computeLayerTracklets(const int iteration);
+  virtual void computeLayerTracklets(const int iteration, int iROFslice, int iVertex);
   virtual void computeLayerCells(const int iteration);
   virtual void findCellsNeighbours(const int iteration);
   virtual void findRoads(const int iteration);
   virtual void initialiseTimeFrameHybrid(const int iteration) { LOGP(error, "initialiseTimeFrameHybrid: this method should never be called with CPU traits"); }
-  virtual void computeTrackletsHybrid(const int iteration) { LOGP(error, "computeTrackletsHybrid: this method should never be called with CPU traits"); }
+  virtual void computeTrackletsHybrid(const int iteration, int, int) { LOGP(error, "computeTrackletsHybrid: this method should never be called with CPU traits"); }
   virtual void computeCellsHybrid(const int iteration) { LOGP(error, "computeCellsHybrid: this method should never be called with CPU traits"); }
   virtual void findCellsNeighboursHybrid(const int iteration) { LOGP(error, "findCellsNeighboursHybrid: this method should never be called with CPU traits"); }
   virtual void findRoadsHybrid(const int iteration) { LOGP(error, "findRoadsHybrid: this method should never be called with CPU traits"); }
   virtual void findTracksHybrid(const int iteration) { LOGP(error, "findTracksHybrid: this method should never be called with CPU traits"); }
-  virtual void findTracks();
+  virtual void findTracks() { LOGP(error, "findTracks: this method is deprecated."); }
   virtual void extendTracks(const int iteration);
   virtual void findShortPrimaries();
   virtual void setBz(float bz);
   virtual bool trackFollowing(TrackITSExt* track, int rof, bool outward, const int iteration);
+  virtual void processNeighbours(int iLayer, int iLevel, const std::vector<CellSeed>& currentCellSeed, const std::vector<int>& currentCellId, std::vector<CellSeed>& updatedCellSeed, std::vector<int>& updatedCellId);
 
   void UpdateTrackingParameters(const std::vector<TrackingParameters>& trkPars);
   TimeFrame* getTimeFrame() { return mTimeFrame; }
@@ -97,15 +98,14 @@ class TrackerTraits
   float mBz = 5.f;
 
  private:
-  void traverseCellsTree(const int, const int);
   track::TrackParCov buildTrackSeed(const Cluster& cluster1, const Cluster& cluster2, const TrackingFrameInfo& tf3);
   bool fitTrack(TrackITSExt& track, int start, int end, int step, float chi2clcut = o2::constants::math::VeryBig, float chi2ndfcut = o2::constants::math::VeryBig, float maxQoverPt = o2::constants::math::VeryBig, int nCl = 0);
 
   int mNThreads = 1;
   bool mApplySmoothing = false;
-  o2::base::PropagatorImpl<float>::MatCorrType mCorrType = o2::base::PropagatorImpl<float>::MatCorrType::USEMatCorrNONE;
 
  protected:
+  o2::base::PropagatorImpl<float>::MatCorrType mCorrType = o2::base::PropagatorImpl<float>::MatCorrType::USEMatCorrNONE;
   o2::gpu::GPUChainITS* mChain = nullptr;
   TimeFrame* mTimeFrame;
   std::vector<TrackingParameters> mTrkParams;
@@ -142,9 +142,9 @@ inline const int4 TrackerTraits::getBinsRect(const int layerIndex, float phi, fl
                                              float z1, float z2, float maxdeltaz)
 {
   const float zRangeMin = o2::gpu::GPUCommonMath::Min(z1, z2) - maxdeltaz;
-  const float phiRangeMin = phi - maxdeltaphi;
+  const float phiRangeMin = (maxdeltaphi > constants::math::Pi) ? 0.f : phi - maxdeltaphi;
   const float zRangeMax = o2::gpu::GPUCommonMath::Max(z1, z2) + maxdeltaz;
-  const float phiRangeMax = phi + maxdeltaphi;
+  const float phiRangeMax = (maxdeltaphi > constants::math::Pi) ? constants::math::TwoPi : phi + maxdeltaphi;
 
   if (zRangeMax < -mTrkParams[0].LayerZ[layerIndex + 1] ||
       zRangeMin > mTrkParams[0].LayerZ[layerIndex + 1] || zRangeMin > zRangeMax) {

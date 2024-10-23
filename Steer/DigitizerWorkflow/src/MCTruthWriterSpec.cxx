@@ -84,7 +84,7 @@ class MCTruthWriterTask : public o2::framework::Task
     }
     if (mIO) {
       // this triggers the reader process
-      pc.outputs().snapshot({"TST", "TRIGGERREAD", 0, Lifetime::Timeframe}, labelfilename);
+      pc.outputs().snapshot({"TST", "TRIGGERREAD", 0}, labelfilename);
     }
 
     // we should be only called once; tell DPL that this process is ready to exit
@@ -97,7 +97,6 @@ class MCTruthWriterTask : public o2::framework::Task
   bool mNew = false;
   bool mIO = false;
   int mID = 0;
-  o2::dataformats::MCTruthContainer<long> mLabels; // labels which get filled
 };
 
 o2::framework::DataProcessorSpec getMCTruthWriterSpec(int id, bool doio, bool newmctruth)

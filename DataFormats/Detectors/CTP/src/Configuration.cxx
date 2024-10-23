@@ -19,6 +19,7 @@
 #include <regex>
 #include "CommonUtils/StringUtils.h"
 #include <fairlogger/Logger.h>
+#include <iostream>
 
 using namespace o2::ctp;
 //
@@ -95,7 +96,7 @@ int BCMask::setBCmask(std::vector<std::string>& tokens)
     }
   } else {
     // list of integers
-    for (int i = 2; i < tokens.size(); i++) {
+    for (uint32_t i = 2; i < tokens.size(); i++) {
       uint32_t bc;
       try {
         bc = std::stoull(tokens[i]);
@@ -223,7 +224,7 @@ int CTPConfiguration::addInput(std::string& inp, int clsindex, std::map<int, std
   }
   // add to desc
   // check if already there
-  for (int i = 0; i < mInputs.size(); i++) {
+  for (uint32_t i = 0; i < mInputs.size(); i++) {
     if (mInputs[i].name == ctpinp.name) {
       LOG(info) << "input found at:" << i;
       descInputsIndex[clsindex].push_back(i);
@@ -365,7 +366,7 @@ int CTPConfiguration::processConfigurationLineRun3(std::string& line, int& level
         // jusko notation
       } else {
         // list of integers
-        for (int i = 2; i < ntokens; i++) {
+        for (uint32_t i = 2; i < ntokens; i++) {
           uint32_t bc;
           try {
             bc = std::stoull(tokens[i]);
@@ -420,7 +421,7 @@ int CTPConfiguration::processConfigurationLineRun3(std::string& line, int& level
       LOG(info) << "Cluster:" << line;
       cluster.name = tokens[2];
       o2::detectors::DetID::mask_t mask;
-      for (int item = 3; item < ntokens; item++) {
+      for (uint32_t item = 3; item < ntokens; item++) {
         std::string detname = tokens[item];
         capitaliseString(detname);
         // LOG(info) << "Detector:" << detname;
@@ -455,7 +456,7 @@ int CTPConfiguration::processConfigurationLineRun3(std::string& line, int& level
       CTPDescriptor desc;
       desc.name = "d" + cls.name;
       // LOG(info) << "point:" << cls.cluster << " " << &mClusters.front();
-      for (int i = 2; i < tokens.size(); i++) {
+      for (uint32_t i = 2; i < tokens.size(); i++) {
         std::string token = tokens[i];
         bool isGenerator = 0;
         for (auto const& gen : CTPGenerator::Generators) {
@@ -479,7 +480,7 @@ int CTPConfiguration::processConfigurationLineRun3(std::string& line, int& level
           cls.downScale = std::stoul(token, nullptr, 16);
         } else if (token.find("bcm") != std::string::npos) { // bcmask
           // std::cout << "Mask" << std::endl;
-          int i = 0;
+          uint32_t i = 0;
           for (auto const& bcm : mBCMasks) {
             if (bcm.name == token) {
               cls.BCClassMask.push_back(&bcm);
@@ -509,8 +510,8 @@ int CTPConfiguration::processConfigurationLineRun3(std::string& line, int& level
 }
 int CTPConfiguration::processConfigurationLineRun3v2(std::string& line, int& level, std::map<int, std::vector<int>>& descInputsIndex)
 {
-  LOG(info) << "Processing line";
-  LOG(info) << "line:" << line << " lev:" << level;
+  LOG(debug) << "Processing line";
+  LOG(debug) << "line:" << line << " lev:" << level;
   //
   std::vector<std::string> tokens = o2::utils::Str::tokenize(line, ' ');
   size_t ntokens = tokens.size();
@@ -556,7 +557,7 @@ int CTPConfiguration::processConfigurationLineRun3v2(std::string& line, int& lev
       level = UNKNOWN;
     }
   }
-  LOG(info) << "Level:" << level;
+  LOG(debug) << "Level:" << level;
   switch (level) {
     case VERSION: {
       break;
@@ -584,7 +585,7 @@ int CTPConfiguration::processConfigurationLineRun3v2(std::string& line, int& lev
       uint32_t index = std::stoul(tokens[2]);
       ctpinp.inputMask = (1ull << (index - 1));
       mInputs.push_back(ctpinp);
-      LOG(info) << "Input:" << ctpinp.name << " index:" << index;
+      LOG(debug) << "Input:" << ctpinp.name << " index:" << index;
       break;
     }
     case MASKS: {
@@ -595,7 +596,7 @@ int CTPConfiguration::processConfigurationLineRun3v2(std::string& line, int& lev
       }
       bcmask.setBCmask(tokens);
       mBCMasks.push_back(bcmask);
-      LOG(info) << "BC mask added:" << bcmask.name;
+      LOG(debug) << "BC mask added:" << bcmask.name;
       break;
     }
     case GENS: {
@@ -603,7 +604,7 @@ int CTPConfiguration::processConfigurationLineRun3v2(std::string& line, int& lev
       gen.name = tokens[0];
       gen.frequency = tokens[1];
       mGenerators.push_back(gen);
-      LOG(info) << "Gen added:" << line;
+      LOG(debug) << "Gen added:" << line;
       break;
     }
     case DESCRIPTORS: {
@@ -613,7 +614,7 @@ int CTPConfiguration::processConfigurationLineRun3v2(std::string& line, int& lev
       }
       CTPDescriptor desc;
       desc.name = tokens[0];
-      for (int i = 1; i < tokens.size(); i++) {
+      for (uint32_t i = 1; i < tokens.size(); i++) {
         const CTPInput* inp = isInputInConfig(tokens[i]);
         if (inp != nullptr) {
           desc.inputs.push_back(inp);
@@ -629,9 +630,9 @@ int CTPConfiguration::processConfigurationLineRun3v2(std::string& line, int& lev
       o2::detectors::DetID det(detname.c_str());
       if (isDetector(det)) {
         ctpdet.detID = det.getID();
-        LOG(info) << "Detector found:" << det.getID() << " " << detname;
+        LOG(debug) << "Detector found:" << det.getID() << " " << detname;
       } else {
-        LOG(info) << "Unknown detectors:" << line;
+        LOG(error) << "Unknown detectors:" << line;
       }
       mDetectors.push_back(ctpdet);
       level = LTGitems;
@@ -641,7 +642,7 @@ int CTPConfiguration::processConfigurationLineRun3v2(std::string& line, int& lev
       if (ntokens == 1) {
         mDetectors.back().mode = tokens[0];
       }
-      LOG(info) << "LTGitem:" << line;
+      LOG(debug) << "LTGitem:" << line;
       break;
     }
     case CLUSTER: {
@@ -649,13 +650,13 @@ int CTPConfiguration::processConfigurationLineRun3v2(std::string& line, int& lev
       try {
         cluster.hwMask = std::stoull(tokens[0]);
       } catch (...) {
-        LOG(info) << "Cluster syntax error:" << line;
+        LOG(error) << "Cluster syntax error:" << line;
         return level;
       }
-      LOG(info) << "Cluster:" << line;
+      LOG(debug) << "Cluster:" << line;
       cluster.name = tokens[2];
       o2::detectors::DetID::mask_t mask;
-      for (int item = 3; item < ntokens; item++) {
+      for (uint32_t item = 3; item < ntokens; item++) {
         std::string detname = tokens[item];
         capitaliseString(detname);
         // LOG(info) << "Detector:" << detname;
@@ -679,10 +680,10 @@ int CTPConfiguration::processConfigurationLineRun3v2(std::string& line, int& lev
       try {
         index = std::stoull(tokens[1]);
       } catch (...) {
-        LOG(info) << "Class syntax error:" << line;
+        LOG(error) << "Class syntax error:" << line;
         return level;
       }
-      LOG(info) << "Class:" << line;
+      LOG(debug) << "Class:" << line;
       CTPClass cls;
       cls.classMask = 1ull << index;
       cls.name = tokens[0];
@@ -715,7 +716,7 @@ int CTPConfiguration::processConfigurationLineRun3v2(std::string& line, int& lev
       break;
     }
     default: {
-      LOG(info) << "unknown line:" << line;
+      LOG(warning) << "unknown line:" << line;
     }
   }
   return 0;
@@ -772,6 +773,16 @@ int CTPConfiguration::getInputIndex(const std::string& name) const
   LOG(info) << "input:" << name << " index:" << index;
   return index;
 }
+std::string CTPConfiguration::getClassNameFromHWIndex(int index)
+{
+  for (auto& cls : mCTPClasses) {
+    if (cls.classMask == (1ull << index)) {
+      return cls.name;
+    }
+  }
+  std::string ret = "not found";
+  return ret;
+}
 bool CTPConfiguration::isMaskInInputs(const uint64_t& mask) const
 {
   for (auto const& inp : mInputs) {
@@ -812,7 +823,7 @@ const CTPInput* CTPConfiguration::isInputInConfig(const std::string inpname) con
   LOG(info) << "isInputInConfig NOT found:" << inpname;
   return nullptr;
 }
-const CTPInput* CTPConfiguration::isInputInConfig(const int index) const
+const CTPInput* CTPConfiguration::isInputInConfig(const uint32_t index) const
 {
   for (const auto& inp : mInputs) {
     // std::cout << "isInputINConfig:" << inp.name << " " << inp.getIndex() << " " << index << std::endl;
@@ -876,6 +887,7 @@ uint64_t CTPConfiguration::getTriggerClassMask() const
   }
   return clsmask;
 }
+// Hardware positions of classes
 std::vector<int> CTPConfiguration::getTriggerClassList() const
 {
   uint64_t clsmask = getTriggerClassMask();
@@ -996,6 +1008,10 @@ int CTPConfiguration::checkConfigConsistency() const
   std::cout << "CTP Config consistency checked. WARNINGS:" << iw << " ERRORS:" << ret << std::endl;
   return ret;
 }
+void CTPConfiguration::printConfigString()
+{
+  std::cout << mConfigString << std::endl;
+};
 //
 int CTPInputsConfiguration::createInputsConfigFromFile(std::string& filename)
 {
@@ -1049,6 +1065,9 @@ void CTPInputsConfiguration::printStream(std::ostream& stream) const
     input.printStream(stream);
   }
 }
+//
+// EMBA - software generated input for EMC - Min Bias Accepted
+//
 const std::vector<CTPInput> CTPInputsConfiguration::CTPInputsDefault =
   {
     CTPInput("MT0A", "FT0", 1), CTPInput("MT0C", "FT0", 2), CTPInput("MTVX", "FT0", 3), CTPInput("MTSC", "FT0", 4), CTPInput("MTCE", "FT0", 5),
@@ -1057,16 +1076,16 @@ const std::vector<CTPInput> CTPInputsConfiguration::CTPInputsDefault =
     CTPInput("0DMC", "EMC", 14), CTPInput("0DJ1", "EMC", 41), CTPInput("0DG1", "EMC", 42), CTPInput("0DJ2", "EMC", 43), CTPInput("0DG2", "EMC", 44),
     CTPInput("0EMC", "EMC", 21), CTPInput("0EJ1", "EMC", 37), CTPInput("0EG1", "EMC", 38), CTPInput("0EJ2", "EMC", 39), CTPInput("0EG2", "EMC", 40),
     CTPInput("0PH0", "PHS", 22), CTPInput("1PHL", "PHS", 27), CTPInput("1PHH", "PHS", 28), CTPInput("1PHL", "PHM", 29),
-    CTPInput("1ZED", "ZDC", 25), CTPInput("1ZNC", "ZDC", 26)};
+    CTPInput("1ZED", "ZDC", 25), CTPInput("1ZNC", "ZDC", 26), CTPInput("EMBA", "EMC", 48)};
 void CTPInputsConfiguration::initDefaultInputConfig()
 {
   defaultInputConfig.CTPInputs = CTPInputsConfiguration::CTPInputsDefault;
 }
 /// Return input name from default inputs configuration.
 /// Take into account convention that L0 inputs has (index+100) in the first version of CTP config file (*.rcfg)
-std::string CTPInputsConfiguration::getInputNameFromIndex100(int index)
+std::string CTPInputsConfiguration::getInputNameFromIndex100(uint32_t index)
 {
-  int indexcor = index;
+  uint32_t indexcor = index;
   if (index > 100) {
     indexcor = index - 100;
   }
@@ -1084,7 +1103,7 @@ std::string CTPInputsConfiguration::getInputNameFromIndex100(int index)
 }
 /// Return input name from default inputs configuration.
 /// Index has to be in range [1::48]
-std::string CTPInputsConfiguration::getInputNameFromIndex(int index)
+std::string CTPInputsConfiguration::getInputNameFromIndex(uint32_t index)
 {
   if (index > o2::ctp::CTP_NINPUTS) {
     LOG(warn) << "getInputNameFRomIndex: index too big:" << index;
@@ -1103,7 +1122,7 @@ int CTPInputsConfiguration::getInputIndexFromName(std::string& name)
 {
   std::string namecorr = name;
   if ((name[0] == '0') || (name[0] == 'M') || (name[0] == '1')) {
-    namecorr.substr(1, namecorr.size() - 1);
+    namecorr = namecorr.substr(1, namecorr.size() - 1);
   } else {
     LOG(warn) << "Input name without level:" << name;
   }
@@ -1114,4 +1133,10 @@ int CTPInputsConfiguration::getInputIndexFromName(std::string& name)
   }
   LOG(warn) << "Input with name:" << name << " not in default input config";
   return 0xff;
+}
+
+std::ostream& o2::ctp::operator<<(std::ostream& in, const o2::ctp::CTPConfiguration& conf)
+{
+  conf.printStream(in);
+  return in;
 }

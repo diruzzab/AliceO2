@@ -72,7 +72,7 @@ void TrackerDPL::run(ProcessingContext& pc)
   // the output vector however is created directly inside the message memory thus avoiding copy by
   // snapshot
   auto rofsinput = pc.inputs().get<const std::vector<o2::itsmft::ROFRecord>>("ROframes");
-  auto& rofs = pc.outputs().make<std::vector<o2::itsmft::ROFRecord>>(Output{"MFT", "MFTTrackROF", 0, Lifetime::Timeframe}, rofsinput.begin(), rofsinput.end());
+  auto& rofs = pc.outputs().make<std::vector<o2::itsmft::ROFRecord>>(Output{"MFT", "MFTTrackROF", 0}, rofsinput.begin(), rofsinput.end());
 
   ROFFilter filter = [](const o2::itsmft::ROFRecord& r) { return true; };
 
@@ -104,12 +104,12 @@ void TrackerDPL::run(ProcessingContext& pc)
     LOG(info) << labels->getIndexedSize() << " MC label objects , in " << mc2rofs.size() << " MC events";
   }
 
-  auto& allClusIdx = pc.outputs().make<std::vector<int>>(Output{"MFT", "TRACKCLSID", 0, Lifetime::Timeframe});
+  auto& allClusIdx = pc.outputs().make<std::vector<int>>(Output{"MFT", "TRACKCLSID", 0});
   std::vector<o2::MCCompLabel> trackLabels;
   std::vector<o2::MCCompLabel> allTrackLabels;
   std::vector<o2::mft::TrackLTF> tracks;
   std::vector<o2::mft::TrackLTFL> tracksL;
-  auto& allTracksMFT = pc.outputs().make<std::vector<o2::mft::TrackMFT>>(Output{"MFT", "TRACKS", 0, Lifetime::Timeframe});
+  auto& allTracksMFT = pc.outputs().make<std::vector<o2::mft::TrackMFT>>(Output{"MFT", "TRACKS", 0});
 
   std::uint32_t roFrameId = 0;
   int nROFs = rofs.size();
@@ -197,6 +197,9 @@ void TrackerDPL::run(ProcessingContext& pc)
       int ncl = trc.getNumberOfPoints();
       for (int ic = 0; ic < ncl; ic++) {
         auto externalClusterID = trc.getExternalClusterIndex(ic);
+        auto clusterSize = trc.getExternalClusterSize(ic);
+        auto clusterLayer = trc.getExternalClusterLayer(ic);
+        trc.setClusterSize(clusterLayer, clusterSize);
         allClusIdx.push_back(externalClusterID);
       }
       allTracks.emplace_back(trc);
@@ -324,8 +327,8 @@ void TrackerDPL::run(ProcessingContext& pc)
   LOG(info) << "MFTTracker pushed " << allTracksMFT.size() << " tracks";
 
   if (mUseMC) {
-    pc.outputs().snapshot(Output{"MFT", "TRACKSMCTR", 0, Lifetime::Timeframe}, allTrackLabels);
-    pc.outputs().snapshot(Output{"MFT", "TRACKSMC2ROF", 0, Lifetime::Timeframe}, mc2rofs);
+    pc.outputs().snapshot(Output{"MFT", "TRACKSMCTR", 0}, allTrackLabels);
+    pc.outputs().snapshot(Output{"MFT", "TRACKSMC2ROF", 0}, mc2rofs);
   }
 
   mTimer[SWTot].Stop();
@@ -344,6 +347,9 @@ void TrackerDPL::updateTimeDependentParams(ProcessingContext& pc)
   static bool initOnceDone = false;
   if (!initOnceDone) { // this params need to be queried only once
     initOnceDone = true;
+    if (pc.inputs().getPos("mftTGeo") >= 0) {
+      pc.inputs().get<o2::mft::GeometryTGeo*>("mftTGeo");
+    }
     pc.inputs().get<o2::itsmft::TopologyDictionary*>("cldict"); // just to trigger the finaliseCCDB
     bool continuous = o2::base::GRPGeomHelper::instance().getGRPECS()->isDetContinuousReadOut(o2::detectors::DetID::MFT);
     LOG(info) << "MFTTracker RO: continuous =" << continuous;
@@ -394,6 +400,12 @@ void TrackerDPL::finaliseCCDB(ConcreteDataMatcher& matcher, void* obj)
   if (matcher == ConcreteDataMatcher("MFT", "CLUSDICT", 0)) {
     LOG(info) << "cluster dictionary updated";
     mDict = (const o2::itsmft::TopologyDictionary*)obj;
+    return;
+  }
+  if (matcher == ConcreteDataMatcher("MFT", "GEOMTGEO", 0)) {
+    LOG(info) << "MFT GeomtetryTGeo loaded from ccdb";
+    o2::mft::GeometryTGeo::adopt((o2::mft::GeometryTGeo*)obj);
+    return;
   }
 }
 
@@ -414,7 +426,7 @@ void TrackerDPL::setMFTROFrameLengthInBC(int nbc)
 }
 
 ///_______________________________________
-DataProcessorSpec getTrackerSpec(bool useMC, int nThreads)
+DataProcessorSpec getTrackerSpec(bool useMC, bool useGeom, int nThreads)
 {
   std::vector<InputSpec> inputs;
   inputs.emplace_back("compClusters", "MFT", "COMPCLUSTERS", 0, Lifetime::Timeframe);
@@ -427,14 +439,17 @@ DataProcessorSpec getTrackerSpec(bool useMC, int nThreads)
     inputs.emplace_back("IRFramesITS", "ITS", "IRFRAMES", 0, Lifetime::Timeframe);
   }
 
-  auto ggRequest = std::make_shared<o2::base::GRPGeomRequest>(false,                             // orbitResetTime
-                                                              true,                              // GRPECS=true
-                                                              false,                             // GRPLHCIF
-                                                              true,                              // GRPMagField
-                                                              false,                             // askMatLUT
-                                                              o2::base::GRPGeomRequest::Aligned, // geometry
+  auto ggRequest = std::make_shared<o2::base::GRPGeomRequest>(false,                                                                        // orbitResetTime
+                                                              true,                                                                         // GRPECS=true
+                                                              false,                                                                        // GRPLHCIF
+                                                              true,                                                                         // GRPMagField
+                                                              false,                                                                        // askMatLUT
+                                                              useGeom ? o2::base::GRPGeomRequest::Aligned : o2::base::GRPGeomRequest::None, // geometry
                                                               inputs,
                                                               true);
+  if (!useGeom) {
+    ggRequest->addInput({"mftTGeo", "MFT", "GEOMTGEO", 0, Lifetime::Condition, framework::ccdbParamSpec("MFT/Config/Geometry")}, inputs);
+  }
   std::vector<OutputSpec> outputs;
   outputs.emplace_back("MFT", "TRACKS", 0, Lifetime::Timeframe);
   outputs.emplace_back("MFT", "MFTTrackROF", 0, Lifetime::Timeframe);

@@ -18,12 +18,15 @@ o2_add_library(DataFormatsFT0
           src/RawEventData.cxx
           src/CTF.cxx
           src/LookUpTable.cxx
+          src/SlewingCoef.cxx
+
   PUBLIC_LINK_LIBRARIES O2::FT0Base
                         O2::DataFormatsFIT
                         O2::SimulationDataFormat
                         O2::CommonDataFormat
                         O2::Headers
                         O2::CCDB
+                        O2::DetectorsCommonDataFormats
 )
 
 o2_target_root_dictionary(DataFormatsFT0
@@ -43,4 +46,5 @@ o2_target_root_dictionary(DataFormatsFT0
           include/DataFormatsFT0/GlobalOffsetsInfoObject.h
           include/DataFormatsFT0/GlobalOffsetsCalibrationObject.h
           include/DataFormatsFT0/SpectraInfoObject.h
+          include/DataFormatsFT0/SlewingCoef.h
 )

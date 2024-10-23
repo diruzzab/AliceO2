@@ -10,6 +10,7 @@
 // or submit itself to any jurisdiction.
 
 #include <catch_amalgamated.hpp>
+#include "Framework/DeviceState.h"
 #include "Headers/DataHeader.h"
 #include "Headers/Stack.h"
 #include "MemoryResources/MemoryResources.h"
@@ -47,7 +48,7 @@ TEST_CASE("DataRelayer")
     TimingHelpers::defaultCPUTimeConfigurator(uv_default_loop()));
   DataProcessingStats stats(
     TimingHelpers::defaultRealtimeBaseConfigurator(0, uv_default_loop()),
-    TimingHelpers::defaultCPUTimeConfigurator(uv_default_loop()));
+    TimingHelpers::defaultCPUTimeConfigurator(uv_default_loop()), {});
   int quickUpdateInterval = 1;
   using MetricSpec = DataProcessingStats::MetricSpec;
   std::vector<MetricSpec> specs{
@@ -60,10 +61,12 @@ TEST_CASE("DataRelayer")
     stats.registerMetric(spec);
   }
 
+  DeviceState state;
   ref.registerService(ServiceRegistryHelpers::handleForService<Monitoring>(&monitoring));
   ref.registerService(ServiceRegistryHelpers::handleForService<DataProcessingStats>(&stats));
   ref.registerService(ServiceRegistryHelpers::handleForService<DataProcessingStates>(&states));
   ref.registerService(ServiceRegistryHelpers::handleForService<DriverConfig const>(&driverConfig));
+  ref.registerService(ServiceRegistryHelpers::handleForService<DeviceState>(&state));
   // A simple test where an input is provided
   // and the subsequent InputRecord is immediately requested.
   SECTION("TestNoWait")
@@ -76,6 +79,7 @@ TEST_CASE("DataRelayer")
     std::vector<ForwardRoute> forwards;
     std::vector<InputChannelInfo> infos{1};
     TimesliceIndex index{1, infos};
+    ref.registerService(ServiceRegistryHelpers::handleForService<TimesliceIndex>(&index));
 
     auto policy = CompletionPolicyHelpers::consumeWhenAny();
     DataRelayer relayer(policy, inputs, index, {registry});
@@ -98,7 +102,8 @@ TEST_CASE("DataRelayer")
     messages[1] = transport->CreateMessage(1000);
     fair::mq::MessagePtr& header = messages[0];
     fair::mq::MessagePtr& payload = messages[1];
-    relayer.relay(header->GetData(), messages.data(), messages.size());
+    DataRelayer::InputInfo fakeInfo{0, messages.size(), DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+    relayer.relay(header->GetData(), messages.data(), fakeInfo, messages.size());
     std::vector<RecordAction> ready;
     relayer.getReadyToProcess(ready);
     REQUIRE(ready.size() == 1);
@@ -124,6 +129,7 @@ TEST_CASE("DataRelayer")
     std::vector<ForwardRoute> forwards;
     std::vector<InputChannelInfo> infos{1};
     TimesliceIndex index{1, infos};
+    ref.registerService(ServiceRegistryHelpers::handleForService<TimesliceIndex>(&index));
 
     auto policy = CompletionPolicyHelpers::consumeWhenAny();
     DataRelayer relayer(policy, inputs, index, {registry});
@@ -146,7 +152,8 @@ TEST_CASE("DataRelayer")
     messages[1] = transport->CreateMessage(1000);
     fair::mq::MessagePtr& header = messages[0];
     fair::mq::MessagePtr& payload = messages[1];
-    relayer.relay(header->GetData(), messages.data(), messages.size());
+    DataRelayer::InputInfo fakeInfo{0, messages.size(), DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+    relayer.relay(header->GetData(), messages.data(), fakeInfo, messages.size());
     std::vector<RecordAction> ready;
     relayer.getReadyToProcess(ready);
     REQUIRE(ready.size() == 1);
@@ -184,6 +191,7 @@ TEST_CASE("DataRelayer")
 
     std::vector<InputChannelInfo> infos{1};
     TimesliceIndex index{1, infos};
+    ref.registerService(ServiceRegistryHelpers::handleForService<TimesliceIndex>(&index));
 
     auto policy = CompletionPolicyHelpers::consumeWhenAll();
     DataRelayer relayer(policy, inputs, index, {registry});
@@ -198,7 +206,8 @@ TEST_CASE("DataRelayer")
       messages[1] = transport->CreateMessage(1000);
       fair::mq::MessagePtr& header = messages[0];
       fair::mq::MessagePtr& payload = messages[1];
-      relayer.relay(header->GetData(), messages.data(), messages.size());
+      DataRelayer::InputInfo fakeInfo{0, messages.size(), DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+      relayer.relay(header->GetData(), messages.data(), fakeInfo, messages.size());
       REQUIRE(header.get() == nullptr);
       REQUIRE(payload.get() == nullptr);
     };
@@ -263,6 +272,7 @@ TEST_CASE("DataRelayer")
 
     std::vector<InputChannelInfo> infos{1};
     TimesliceIndex index{1, infos};
+    ref.registerService(ServiceRegistryHelpers::handleForService<TimesliceIndex>(&index));
 
     auto policy = CompletionPolicyHelpers::consumeWhenAll();
     DataRelayer relayer(policy, inputs, index, {registry});
@@ -277,7 +287,8 @@ TEST_CASE("DataRelayer")
       messages[1] = transport->CreateMessage(1000);
       fair::mq::MessagePtr& header = messages[0];
       fair::mq::MessagePtr& payload = messages[1];
-      relayer.relay(header->GetData(), messages.data(), messages.size());
+      DataRelayer::InputInfo fakeInfo{0, messages.size(), DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+      relayer.relay(header->GetData(), messages.data(), fakeInfo, messages.size());
       REQUIRE(header.get() == nullptr);
       REQUIRE(payload.get() == nullptr);
     };
@@ -346,6 +357,7 @@ TEST_CASE("DataRelayer")
     auto policy = CompletionPolicyHelpers::consumeWhenAll();
     std::vector<InputChannelInfo> infos{1};
     TimesliceIndex index{1, infos};
+    ref.registerService(ServiceRegistryHelpers::handleForService<TimesliceIndex>(&index));
     DataRelayer relayer(policy, inputs, index, {registry});
     // Only two messages to fill the cache.
     relayer.setPipelineLength(2);
@@ -368,7 +380,8 @@ TEST_CASE("DataRelayer")
       messages[1] = transport->CreateMessage(1000);
       fair::mq::MessagePtr& header = messages[0];
       fair::mq::MessagePtr& payload = messages[1];
-      auto res = relayer.relay(header->GetData(), messages.data(), messages.size());
+      DataRelayer::InputInfo fakeInfo{0, messages.size(), DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+      auto res = relayer.relay(header->GetData(), messages.data(), fakeInfo, messages.size());
       REQUIRE((res.type != DataRelayer::RelayChoice::Type::WillRelay || header.get() == nullptr));
       REQUIRE((res.type != DataRelayer::RelayChoice::Type::WillRelay || payload.get() == nullptr));
       REQUIRE((res.type != DataRelayer::RelayChoice::Type::Backpressured || header.get() != nullptr));
@@ -420,6 +433,7 @@ TEST_CASE("DataRelayer")
     std::vector<ForwardRoute> forwards;
     std::vector<InputChannelInfo> infos{1};
     TimesliceIndex index{1, infos};
+    ref.registerService(ServiceRegistryHelpers::handleForService<TimesliceIndex>(&index));
 
     auto policy = CompletionPolicyHelpers::processWhenAny();
     DataRelayer relayer(policy, inputs, index, {registry});
@@ -449,7 +463,8 @@ TEST_CASE("DataRelayer")
       messages[0] = o2::pmr::getMessage(Stack{channelAlloc, dh, h});
       messages[1] = transport->CreateMessage(1000);
       fair::mq::MessagePtr& header = messages[0];
-      return relayer.relay(header->GetData(), messages.data(), messages.size());
+      DataRelayer::InputInfo fakeInfo{0, messages.size(), DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+      return relayer.relay(header->GetData(), messages.data(), fakeInfo, messages.size());
     };
 
     // This fills the cache, and then empties it.
@@ -490,6 +505,7 @@ TEST_CASE("DataRelayer")
     std::vector<ForwardRoute> forwards;
     std::vector<InputChannelInfo> infos{1};
     TimesliceIndex index{1, infos};
+    ref.registerService(ServiceRegistryHelpers::handleForService<TimesliceIndex>(&index));
 
     auto policy = CompletionPolicyHelpers::processWhenAny();
     DataRelayer relayer(policy, inputs, index, {registry});
@@ -519,7 +535,8 @@ TEST_CASE("DataRelayer")
       messages[0] = o2::pmr::getMessage(Stack{channelAlloc, dh, h});
       messages[1] = transport->CreateMessage(1000);
       fair::mq::MessagePtr& header = messages[0];
-      return relayer.relay(header->GetData(), messages.data(), messages.size());
+      DataRelayer::InputInfo fakeInfo{0, messages.size(), DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+      return relayer.relay(header->GetData(), messages.data(), fakeInfo, messages.size());
     };
 
     // This fills the cache, and then empties it.
@@ -547,6 +564,7 @@ TEST_CASE("DataRelayer")
     std::vector<ForwardRoute> forwards;
     std::vector<InputChannelInfo> infos{1};
     TimesliceIndex index{1, infos};
+    ref.registerService(ServiceRegistryHelpers::handleForService<TimesliceIndex>(&index));
 
     auto policy = CompletionPolicyHelpers::processWhenAny();
     DataRelayer relayer(policy, inputs, index, {registry});
@@ -577,7 +595,8 @@ TEST_CASE("DataRelayer")
     messages[1] = transport->CreateMessage(1000);
     fair::mq::MessagePtr& header = messages[0];
     fair::mq::MessagePtr& payload = messages[1];
-    relayer.relay(header->GetData(), &messages[0], 2);
+    DataRelayer::InputInfo fakeInfo{0, messages.size(), DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+    relayer.relay(header->GetData(), &messages[0], fakeInfo, 2);
     REQUIRE(header.get() == nullptr);
     REQUIRE(payload.get() == nullptr);
     // This fills the cache, and then waits.
@@ -585,7 +604,8 @@ TEST_CASE("DataRelayer")
     messages[3] = transport->CreateMessage(1000);
     fair::mq::MessagePtr& header2 = messages[2];
     fair::mq::MessagePtr& payload2 = messages[3];
-    auto action = relayer.relay(header2->GetData(), &messages[2], 2);
+    DataRelayer::InputInfo fakeInfo2{2, 2, DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+    auto action = relayer.relay(header2->GetData(), &messages[2], fakeInfo2, 2);
     REQUIRE(action.type == DataRelayer::RelayChoice::Type::Backpressured);
     REQUIRE(header2.get() != nullptr);
     REQUIRE(payload2.get() != nullptr);
@@ -605,6 +625,7 @@ TEST_CASE("DataRelayer")
     std::vector<ForwardRoute> forwards;
     std::vector<InputChannelInfo> infos{1};
     TimesliceIndex index{1, infos};
+    ref.registerService(ServiceRegistryHelpers::handleForService<TimesliceIndex>(&index));
 
     auto policy = CompletionPolicyHelpers::processWhenAny();
     DataRelayer relayer(policy, inputs, index, {registry});
@@ -635,7 +656,8 @@ TEST_CASE("DataRelayer")
     messages[1] = transport->CreateMessage(1000);
     fair::mq::MessagePtr& header = messages[0];
     fair::mq::MessagePtr& payload = messages[1];
-    relayer.relay(header->GetData(), &messages[0], 2);
+    DataRelayer::InputInfo fakeInfo{0, 2, DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+    relayer.relay(header->GetData(), &messages[0], fakeInfo, 2);
     REQUIRE(header.get() == nullptr);
     REQUIRE(payload.get() == nullptr);
     // This fills the cache, and then waits.
@@ -643,7 +665,8 @@ TEST_CASE("DataRelayer")
     messages[3] = transport->CreateMessage(1000);
     fair::mq::MessagePtr& header2 = messages[2];
     fair::mq::MessagePtr& payload2 = messages[3];
-    auto action = relayer.relay(header2->GetData(), &messages[2], 2);
+    DataRelayer::InputInfo fakeInfo2{2, 2, DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+    auto action = relayer.relay(header2->GetData(), &messages[2], fakeInfo, 2);
     REQUIRE(action.type == DataRelayer::RelayChoice::Type::Backpressured);
     CHECK(action.timeslice.value == 1);
     REQUIRE(header2.get() != nullptr);
@@ -651,7 +674,8 @@ TEST_CASE("DataRelayer")
     // This fills the cache, and then waits.
     messages[4] = o2::pmr::getMessage(Stack{channelAlloc, dh1, DataProcessingHeader{1, 1}});
     messages[5] = transport->CreateMessage(1000);
-    relayer.relay(header2->GetData(), &messages[4], 2);
+    DataRelayer::InputInfo fakeInfo3{4, 2, DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+    relayer.relay(header2->GetData(), &messages[4], fakeInfo3, 2);
     REQUIRE(action.type == DataRelayer::RelayChoice::Type::Backpressured);
     CHECK(action.timeslice.value == 1);
     REQUIRE(header2.get() != nullptr);
@@ -670,6 +694,7 @@ TEST_CASE("DataRelayer")
     std::vector<ForwardRoute> forwards;
     std::vector<InputChannelInfo> infos{1};
     TimesliceIndex index{1, infos};
+    ref.registerService(ServiceRegistryHelpers::handleForService<TimesliceIndex>(&index));
 
     auto policy = CompletionPolicyHelpers::consumeWhenAny();
     DataRelayer relayer(policy, inputs, index, {registry});
@@ -697,7 +722,8 @@ TEST_CASE("DataRelayer")
     }
     REQUIRE(splitParts.size() == 2 * nSplitParts);
 
-    relayer.relay(splitParts[0]->GetData(), splitParts.data(), splitParts.size());
+    DataRelayer::InputInfo fakeInfo{0, splitParts.size(), DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+    relayer.relay(splitParts[0]->GetData(), splitParts.data(), fakeInfo, splitParts.size());
     std::vector<RecordAction> ready;
     relayer.getReadyToProcess(ready);
     REQUIRE(ready.size() == 1);
@@ -722,6 +748,7 @@ TEST_CASE("DataRelayer")
     std::vector<ForwardRoute> forwards;
     std::vector<InputChannelInfo> infos{1};
     TimesliceIndex index{1, infos};
+    ref.registerService(ServiceRegistryHelpers::handleForService<TimesliceIndex>(&index));
 
     auto policy = CompletionPolicyHelpers::consumeWhenAny();
     DataRelayer relayer(policy, inputs, index, {registry});
@@ -752,7 +779,8 @@ TEST_CASE("DataRelayer")
         ++nTotalPayloads;
       }
       REQUIRE(messages.size() == nPayloads + 1);
-      relayer.relay(messages[0]->GetData(), messages.data(), messages.size(), nPayloads);
+      DataRelayer::InputInfo fakeInfo{0, messages.size(), DataRelayer::InputType::Data, {ChannelIndex::INVALID}};
+      relayer.relay(messages[0]->GetData(), messages.data(), fakeInfo, messages.size(), nPayloads);
       sequenceSize.emplace_back(nPayloads);
     };
     createSequence(100);

@@ -14,7 +14,7 @@
 #include "Framework/DataAllocator.h"
 #include "Framework/Traits.h"
 #include "Framework/TableBuilder.h"
-#include "Framework/AnalysisDataModel.h"
+#include "Framework/ASoA.h"
 #include "Framework/OutputSpec.h"
 #include "Framework/OutputRef.h"
 #include "Framework/InputSpec.h"
@@ -23,6 +23,7 @@
 #include "Framework/Output.h"
 #include "Framework/IndexBuilderHelpers.h"
 #include "Framework/Plugins.h"
+#include "Framework/ExpressionHelpers.h"
 
 #include <string>
 namespace o2::framework
@@ -36,9 +37,9 @@ struct WritingCursor {
 /// Helper class actually implementing the cursor which can write to
 /// a table. The provided template arguments are if type Column and
 /// therefore refer only to the persisted columns.
-template <typename... PC>
-struct WritingCursor<soa::Table<PC...>> {
-  using persistent_table_t = soa::Table<PC...>;
+template <o2::framework::OriginEnc ORIGIN, typename... PC>
+struct WritingCursor<soa::Table<ORIGIN, PC...>> {
+  using persistent_table_t = soa::Table<ORIGIN, PC...>;
   using cursor_t = decltype(std::declval<TableBuilder>().cursor<persistent_table_t>());
 
   template <typename... T>
@@ -89,7 +90,7 @@ struct WritingCursor<soa::Table<PC...>> {
     if constexpr (soa::is_soa_iterator_v<T>) {
       return arg.globalIndex();
     } else {
-      static_assert(!framework::has_type_v<T, framework::pack<PC...>>, "Argument type mismatch");
+      static_assert(!framework::has_type<T>(framework::pack<PC...>{}), "Argument type mismatch");
       return arg;
     }
   }
@@ -123,11 +124,22 @@ struct OutputForTable {
 /// means of the WritingCursor helper class, from which produces actually
 /// derives.
 template <typename T>
-struct Produces : WritingCursor<typename soa::PackToTable<typename T::table_t::persistent_columns_t>::table> {
+requires(!std::is_same_v<void, typename aod::MetadataTrait<T>::metadata>) struct Produces : WritingCursor<typename soa::PackToTable<aod::MetadataTrait<T>::metadata::origin(), typename T::table_t::persistent_columns_t>::table> {
 };
 
-template <template <typename...> class T, typename... C>
-struct Produces<T<C...>> : WritingCursor<typename soa::PackToTable<typename T<C...>::table_t::persistent_columns_t>::table> {
+template <template <o2::framework::OriginEnc, typename...> class T, o2::framework::OriginEnc ORIGIN, typename... C>
+struct Produces<T<ORIGIN, C...>> : WritingCursor<typename soa::PackToTable<ORIGIN, typename T<ORIGIN, C...>::table_t::persistent_columns_t>::table> {
+};
+
+/// Use this to group together produces. Useful to separate them logically
+/// or simply to stay within the 100 elements per Task limit.
+/// Use as:
+///
+/// struct MySetOfProduces : ProducesGroup {
+/// } products;
+///
+/// Notice the label MySetOfProduces is just a mnemonic and can be omitted.
+struct ProducesGroup {
 };
 
 /// Helper template for table transformations
@@ -421,7 +433,7 @@ struct OutputObj {
   OutputSpec const spec()
   {
     header::DataDescription desc{};
-    auto lhash = compile_time_hash(label.c_str());
+    auto lhash = runtime_hash(label.c_str());
     std::memset(desc.str, '_', 16);
     std::stringstream s;
     s << std::hex << lhash;
@@ -481,6 +493,8 @@ auto getTableFromFilter(const T& table, soa::SelectionVector&& selection)
   }
 }
 
+void initializePartitionCaches(std::set<uint32_t> const& hashes, std::shared_ptr<arrow::Schema> const& schema, expressions::Filter const& filter, gandiva::NodePtr& tree, gandiva::FilterPtr& gfilter);
+
 template <typename T>
 struct Partition {
   Partition(expressions::Node&& filter_) : filter{std::forward<expressions::Node>(filter_)}
@@ -493,29 +507,14 @@ struct Partition {
     setTable(table);
   }
 
-  void intializeCaches(std::shared_ptr<arrow::Schema> const& schema)
+  void intializeCaches(std::set<uint32_t> const& hashes, std::shared_ptr<arrow::Schema> const& schema)
   {
-    if (tree == nullptr) {
-      expressions::Operations ops = createOperations(filter);
-      if (isSchemaCompatible(schema, ops)) {
-        tree = createExpressionTree(ops, schema);
-      } else {
-        throw std::runtime_error("Partition filter does not match declared table type");
-      }
-    }
-    if (gfilter == nullptr) {
-      gfilter = framework::expressions::createFilter(schema, framework::expressions::makeCondition(tree));
-    }
+    initializePartitionCaches(hashes, schema, filter, tree, gfilter);
   }
 
-  void inline bindTable(T const& table)
+  void bindTable(T const& table)
   {
-    setTable(table);
-  }
-
-  void setTable(T const& table)
-  {
-    intializeCaches(table.asArrowTable()->schema());
+    intializeCaches(T::table_t::hashes(), table.asArrowTable()->schema());
     if (dataframeChanged) {
       mFiltered = getTableFromFilter(table, soa::selectionToVector(framework::expressions::createSelection(table.asArrowTable(), gfilter)));
       dataframeChanged = false;
@@ -527,13 +526,6 @@ struct Partition {
   {
     if (mFiltered != nullptr) {
       mFiltered->bindExternalIndices(tables...);
-    }
-  }
-
-  void bindInternalIndices()
-  {
-    if (mFiltered != nullptr) {
-      mFiltered->bindInternalIndices();
     }
   }
 
@@ -550,9 +542,36 @@ struct Partition {
     expressions::updatePlaceholders(filter, context);
   }
 
+  [[nodiscard]] std::shared_ptr<arrow::Table> asArrowTable() const
+  {
+    return mFiltered->asArrowTable();
+  }
+
   o2::soa::Filtered<T>* operator->()
   {
     return mFiltered.get();
+  }
+
+  template <typename T1>
+  [[nodiscard]] auto rawSliceBy(o2::framework::Preslice<T1> const& container, int value) const
+  {
+    return mFiltered->rawSliceBy(container, value);
+  }
+
+  [[nodiscard]] auto sliceByCached(framework::expressions::BindingNode const& node, int value, o2::framework::SliceCache& cache) const
+  {
+    return mFiltered->sliceByCached(node, value, cache);
+  }
+
+  [[nodiscard]] auto sliceByCachedUnsorted(framework::expressions::BindingNode const& node, int value, o2::framework::SliceCache& cache) const
+  {
+    return mFiltered->sliceByCachedUnsorted(node, value, cache);
+  }
+
+  template <typename T1, bool OPT, bool SORTED>
+  [[nodiscard]] auto sliceBy(o2::framework::PresliceBase<T1, OPT, SORTED> const& container, int value) const
+  {
+    return mFiltered->sliceBy(container, value);
   }
 
   expressions::Filter filter;
@@ -596,8 +615,8 @@ template <typename T, typename... Cs>
 auto Extend(T const& table)
 {
   static_assert((soa::is_type_spawnable_v<Cs> && ...), "You can only extend a table with expression columns");
-  using output_t = Join<T, soa::Table<Cs...>>;
-  return output_t{{o2::framework::spawner(framework::pack<Cs...>{}, {table.asArrowTable()}, "dynamicExtension"), table.asArrowTable()}, 0};
+  using output_t = Join<T, soa::Table<o2::framework::OriginEnc{"JOIN"}, Cs...>>;
+  return output_t{{o2::framework::spawner<o2::framework::OriginEnc{"JOIN"}>(framework::pack<Cs...>{}, {table.asArrowTable()}, "dynamicExtension"), table.asArrowTable()}, 0};
 }
 
 /// Template function to attach dynamic columns on-the-fly (e.g. inside
@@ -606,7 +625,7 @@ template <typename T, typename... Cs>
 auto Attach(T const& table)
 {
   static_assert((framework::is_base_of_template_v<o2::soa::DynamicColumn, Cs> && ...), "You can only attach dynamic columns");
-  using output_t = Join<T, o2::soa::Table<Cs...>>;
+  using output_t = Join<T, o2::soa::Table<o2::framework::OriginEnc{"JOIN"}, Cs...>>;
   return output_t{{table.asArrowTable()}, table.offset()};
 }
 } // namespace o2::soa

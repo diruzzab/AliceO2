@@ -9,9 +9,13 @@
 // granted to it by virtue of its status as an Intergovernmental Organization
 // or submit itself to any jurisdiction.
 #include "Framework/DataOutputDirector.h"
+#include "Framework/DataSpecUtils.h"
+#include "Headers/DataHeaderHelpers.h"
+#include "Framework/DataDescriptorQueryBuilder.h"
 #include "Framework/Logger.h"
 
 #include <filesystem>
+#include <regex>
 
 #include "rapidjson/document.h"
 #include "rapidjson/prettywriter.h"
@@ -22,9 +26,7 @@
 
 namespace fs = std::filesystem;
 
-namespace o2
-{
-namespace framework
+namespace o2::framework
 {
 using namespace rapidjson;
 
@@ -35,7 +37,7 @@ DataOutputDescriptor::DataOutputDescriptor(std::string inString)
   // the 1st part is used to create a DataDescriptorMatcher
   // the other parts are used to fill treename, colnames, and filename
   // remove all spaces
-  auto cleanString = remove_ws(inString);
+  inString.erase(std::remove_if(inString.begin(), inString.end(), isspace), inString.end());
 
   // reset
   treename = "";
@@ -45,8 +47,8 @@ DataOutputDescriptor::DataOutputDescriptor(std::string inString)
   // analyze the  parts of the input string
   static const std::regex delim1(":");
   std::sregex_token_iterator end;
-  std::sregex_token_iterator iter1(cleanString.begin(),
-                                   cleanString.end(),
+  std::sregex_token_iterator iter1(inString.begin(),
+                                   inString.end(),
                                    delim1,
                                    -1);
 
@@ -128,17 +130,6 @@ void DataOutputDescriptor::printOut()
   for (auto cn : colnames) {
     LOGP(info, "    {}", cn);
   }
-}
-
-std::string DataOutputDescriptor::remove_ws(const std::string& s)
-{
-  std::string s_wns;
-  for (auto c : s) {
-    if (!std::isspace(c)) {
-      s_wns += c;
-    }
-  }
-  return s_wns;
 }
 
 DataOutputDirector::DataOutputDirector()
@@ -497,7 +488,7 @@ FileAndFolder DataOutputDirector::getFileFolder(DataOutputDescriptor* dodesc, ui
       auto fn = resdirname + "/" + mfilenameBases[ind] + ".root";
       delete mfilePtrs[ind];
       mParentMaps[ind]->Clear();
-      mfilePtrs[ind] = TFile::Open(fn.c_str(), mfileMode.c_str(), "", 501);
+      mfilePtrs[ind] = TFile::Open(fn.c_str(), mfileMode.c_str(), "", 505);
     }
     fileAndFolder.file = mfilePtrs[ind];
 
@@ -532,7 +523,7 @@ bool DataOutputDirector::checkFileSizes()
 
   // loop over all files
   // if one file is large, then all files need to be closed
-  for (int i = 0; i < mfilenameBases.size(); i++) {
+  for (auto i = 0U; i < mfilenameBases.size(); i++) {
     if (!mfilePtrs[i]) {
       continue;
     }
@@ -557,7 +548,7 @@ bool DataOutputDirector::checkFileSizes()
 
 void DataOutputDirector::closeDataFiles()
 {
-  for (int i = 0; i < mfilePtrs.size(); i++) {
+  for (auto i = 0U; i < mfilePtrs.size(); i++) {
     auto filePtr = mfilePtrs[i];
     if (filePtr) {
       if (filePtr->IsOpen() && mParentMaps[i]->GetEntries() > 0) {
@@ -584,7 +575,7 @@ void DataOutputDirector::printOut()
 
   LOGP(info, "  File name bases      :");
   for (auto const& fb : mfilenameBases) {
-    LOGP(info, fb);
+    LOGP(info, "{}", fb);
   }
 }
 
@@ -633,6 +624,4 @@ void DataOutputDirector::setMaximumFileSize(float maxfs)
 {
   mmaxfilesize = maxfs;
 }
-
-} // namespace framework
-} // namespace o2
+} // namespace o2::framework

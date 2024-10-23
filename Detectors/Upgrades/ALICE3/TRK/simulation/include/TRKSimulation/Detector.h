@@ -12,15 +12,15 @@
 #ifndef ALICEO2_TRK_DETECTOR_H
 #define ALICEO2_TRK_DETECTOR_H
 
+#include "DetectorsBase/Detector.h"
+#include "ITSMFTSimulation/Hit.h"
+
+#include "TRKSimulation/TRKLayer.h"
+#include "TRKSimulation/TRKServices.h"
+#include "TRKBase/GeometryTGeo.h"
+
+#include <TLorentzVector.h>
 #include <TString.h>
-#include <DetectorsBase/Detector.h>
-#include <ITSMFTSimulation/Hit.h>
-
-#include <TRKSimulation/TRKLayer.h>
-#include <TRKSimulation/TRKServices.h>
-#include <TRKBase/GeometryTGeo.h>
-
-#include "TLorentzVector.h"
 
 namespace o2
 {
@@ -33,6 +33,12 @@ class Detector : public o2::base::DetImpl<Detector>
   Detector(bool active);
   Detector();
   ~Detector();
+
+  // Factory method
+  static o2::base::Detector* create(bool active)
+  {
+    return new Detector(active);
+  }
 
   void ConstructGeometry() override;
 
@@ -61,6 +67,7 @@ class Detector : public o2::base::DetImpl<Detector>
   }
 
   void configDefault();
+  void buildTRKNewVacuumVessel();
   void configFromFile(std::string fileName = "alice3_TRK_layout.txt");
   void configToFile(std::string fileName = "alice3_TRK_layout.txt");
 

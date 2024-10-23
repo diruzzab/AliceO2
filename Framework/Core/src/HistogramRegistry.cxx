@@ -10,22 +10,26 @@
 // or submit itself to any jurisdiction.
 
 #include "Framework/HistogramRegistry.h"
-#include "TClass.h"
 #include <regex>
 #include <TList.h>
+#include <TClass.h>
 
 namespace o2::framework
 {
 
+template void HistogramRegistry::fill(const HistName& histName, double);
+template void HistogramRegistry::fill(const HistName& histName, float);
+template void HistogramRegistry::fill(const HistName& histName, int);
+
 constexpr HistogramRegistry::HistName::HistName(char const* const name)
   : str(name),
-    hash(compile_time_hash(name)),
+    hash(runtime_hash(name)),
     idx(hash & REGISTRY_BITMASK)
 {
 }
 
 HistogramRegistry::HistogramRegistry(char const* const name, std::vector<HistogramSpec> histSpecs, OutputObjHandlingPolicy policy, bool sortHistos, bool createRegistryDir)
-  : mName(name), mPolicy(policy), mRegistryKey(), mRegistryValue(), mSortHistos(sortHistos), mCreateRegistryDir(createRegistryDir)
+  : mName(name), mPolicy(policy), mCreateRegistryDir(createRegistryDir), mSortHistos(sortHistos), mRegistryKey(), mRegistryValue()
 {
   mRegistryKey.fill(0u);
   for (auto& histSpec : histSpecs) {
@@ -37,7 +41,7 @@ HistogramRegistry::HistogramRegistry(char const* const name, std::vector<Histogr
 OutputSpec const HistogramRegistry::spec()
 {
   header::DataDescription desc{};
-  auto lhash = compile_time_hash(mName.data());
+  auto lhash = runtime_hash(mName.data());
   std::memset(desc.str, '_', 16);
   std::stringstream s;
   s << std::hex << lhash;
@@ -117,7 +121,7 @@ HistPtr HistogramRegistry::add(char const* const name, char const* const title, 
 
 HistPtr HistogramRegistry::add(const std::string& name, char const* const title, HistType histType, const std::vector<AxisSpec>& axes, bool callSumw2)
 {
-  return insert({name.c_str(), title, {histType, axes}, callSumw2});
+  return add(name.c_str(), title, histType, axes, callSumw2);
 }
 
 // store a copy of an existing histogram (or group of histograms) under a different name

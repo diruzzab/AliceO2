@@ -32,9 +32,6 @@
     #define local __local
     #define constant __constant
     #define private __private
-    //#include <clc/clc.h> //Use -finclude-default-header instead! current clang libclc.h is incompatible to SPIR-V
-    typedef __SIZE_TYPE__ size_t; //BUG: OpenCL C++ does not declare placement new
-    void* operator new (size_t size, void *ptr);
     #undef global
     #undef local
     #undef constant
@@ -61,14 +58,14 @@
   #define nullptr NULL
   #define NULL (0x0)
 #endif
-#define uint64_t unsigned long
-#define uint32_t unsigned int
-#define uint16_t unsigned short
-#define uint8_t unsigned char
-#define int64_t long
-#define int32_t int
-#define int16_t short
-#define int8_t char
+typedef unsigned long uint64_t;
+typedef unsigned int uint32_t;
+typedef unsigned short uint16_t;
+typedef unsigned char uint8_t;
+typedef signed long int64_t;
+typedef signed int int32_t;
+typedef signed short int16_t;
+typedef signed char int8_t;
 
 // Disable assertions since they produce errors in GPU Code
 #ifdef assert
@@ -80,17 +77,36 @@
 #define GPUCA_OPENCL1
 #endif
 
-#include "GPUReconstructionIncludesDevice.h"
 #include "GPUConstantMem.h"
+#ifdef __OPENCLCPP__
+#include "GPUReconstructionIncludesDeviceAll.h"
+#else // Workaround, since OpenCL1 cannot digest all files
+#include "GPUTPCTrackParam.cxx"
+#include "GPUTPCTrack.cxx"
+#include "GPUTPCGrid.cxx"
+#include "GPUTPCRow.cxx"
+#include "GPUTPCTracker.cxx"
+
+#include "GPUGeneralKernels.cxx"
+#include "GPUErrors.cxx"
+
+#include "GPUTPCTrackletSelector.cxx"
+#include "GPUTPCNeighboursFinder.cxx"
+#include "GPUTPCNeighboursCleaner.cxx"
+#include "GPUTPCStartHitsFinder.cxx"
+#include "GPUTPCStartHitsSorter.cxx"
+#include "GPUTPCTrackletConstructor.cxx"
+#include "GPUTPCGlobalTracking.cxx"
+#endif
 
 // if (gpu_mem != pTracker.GPUParametersConst()->gpumem) return; //TODO!
 
-#define GPUCA_KRNL(x_class, x_attributes, x_arguments, x_forward) GPUCA_KRNL_WRAP(GPUCA_KRNL_LOAD_, x_class, x_attributes, x_arguments, x_forward)
-#define GPUCA_KRNL_LOAD_single(x_class, x_attributes, x_arguments, x_forward) GPUCA_KRNLGPU_SINGLE(x_class, x_attributes, x_arguments, x_forward)
-#define GPUCA_KRNL_LOAD_multi(x_class, x_attributes, x_arguments, x_forward) GPUCA_KRNLGPU_MULTI(x_class, x_attributes, x_arguments, x_forward)
+#define GPUCA_KRNL(...) GPUCA_KRNL_WRAP(GPUCA_KRNL_LOAD_, __VA_ARGS__)
+#define GPUCA_KRNL_LOAD_single(...) GPUCA_KRNLGPU_SINGLE(__VA_ARGS__)
+#define GPUCA_KRNL_LOAD_multi(...) GPUCA_KRNLGPU_MULTI(__VA_ARGS__)
 #define GPUCA_CONSMEM_PTR GPUglobal() char *gpu_mem, GPUconstant() MEM_CONSTANT(GPUConstantMem) * pConstant,
 #define GPUCA_CONSMEM (*pConstant)
-#include "GPUReconstructionKernels.h"
+#include "GPUReconstructionKernelList.h"
 #undef GPUCA_KRNL
 #undef GPUCA_KRNL_LOAD_single
 #undef GPUCA_KRNL_LOAD_multi

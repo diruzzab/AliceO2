@@ -55,7 +55,8 @@ class Geometry;
 namespace o2::emcal
 {
 class Geometry;
-}
+class CellRecalibrator;
+} // namespace o2::emcal
 
 namespace o2::event_visualisation
 {
@@ -166,17 +167,17 @@ class EveWorkflowHelper
   void drawAODMFT(AODMFTTrack const& track, float trackTime);
   void drawAODFwd(AODForwardTrack const& track, float trackTime);
 
-  void drawMFTTrack(o2::track::TrackParFwd track, float trackTime);
-  void drawForwardTrack(mch::TrackParam track, const std::string& gidString, GID::Source source, float startZ, float endZ, float trackTime);
-  void drawITSClusters(GID gid, float trackTime);
-  void drawTPCClusters(GID gid, float trackTime);
-  void drawMFTClusters(GID gid, float trackTime);
-  void drawMCHClusters(GID gid, float trackTime);
-  void drawMIDClusters(GID gid, float trackTime);
-  void drawTRDClusters(const o2::trd::TrackTRD& trc, float trackTime);
-  void drawTOFClusters(GID gid, float trackTime);
-  void drawPoint(float x, float y, float z, float trackTime) { mEvent.addCluster(x, y, z, trackTime); }
-  void drawGlobalPoint(const TVector3& xyx) { mEvent.addGlobalCluster(xyx); }
+  void drawMFTTrack(GID gid, o2::track::TrackParFwd track, float trackTime);
+  void drawForwardTrack(GID gid, mch::TrackParam track, float startZ, float endZ, float trackTime);
+  void drawITSClusters(GID gid);
+  void drawTPCClusters(GID gid);
+  void drawMFTClusters(GID gid);
+  void drawMCHClusters(GID gid);
+  void drawMIDClusters(GID gid);
+  void drawTRDClusters(const o2::trd::TrackTRD& trc);
+  void drawTOFClusters(GID gid);
+  void drawPoint(const float xyz[]) { mEvent.addCluster(xyz); }
+  void drawGlobalPoint(const TVector3& xyx, GID gid, float time) { mEvent.addGlobalCluster(xyx, gid, time); }
   void prepareITSClusters(const o2::itsmft::TopologyDictionary* dict); // fills mITSClustersArray
   void prepareMFTClusters(const o2::itsmft::TopologyDictionary* dict); // fills mMFTClustersArray
   void clear() { mEvent.clear(); }
@@ -191,13 +192,7 @@ class EveWorkflowHelper
   bool isInsideITSROF(float t);
   bool isInsideTimeBracket(float t);
 
-  void save(const std::string& jsonPath,
-            const std::string& ext,
-            int numberOfFiles,
-            o2::dataformats::GlobalTrackID::mask_t trkMask,
-            o2::dataformats::GlobalTrackID::mask_t clMask,
-            o2::header::DataHeader::RunNumberType runNumber,
-            o2::framework::DataProcessingHeader::CreationTime creationTime);
+  void save(const std::string& jsonPath, const std::string& ext, int numberOfFiles);
 
   FilterSet mEnabledFilters;
   std::size_t mMaxNTracks;
@@ -207,6 +202,9 @@ class EveWorkflowHelper
   const o2::globaltracking::RecoContainer* mRecoCont = nullptr;
   const o2::globaltracking::RecoContainer* getRecoContainer() const { return mRecoCont; }
   void setRecoContainer(const o2::globaltracking::RecoContainer* rc) { mRecoCont = rc; }
+  void setEMCALCellRecalibrator(o2::emcal::CellRecalibrator* calibrator) { mEMCALCalib = calibrator; }
+  void setMaxEMCALCellTime(float maxtime) { mEMCALMaxCellTime = maxtime; }
+  void setMinEMCALCellEnergy(float minenergy) { mEMCALMinCellEnergy = minenergy; }
   TracksSet mTrackSet;
   o2::event_visualisation::VisualisationEvent mEvent;
   std::unordered_map<GID, std::size_t> mTotalDataTypes;
@@ -221,11 +219,14 @@ class EveWorkflowHelper
   o2::its::GeometryTGeo* mITSGeom;
   o2::phos::Geometry* mPHOSGeom;
   o2::emcal::Geometry* mEMCALGeom;
+  o2::emcal::CellRecalibrator* mEMCALCalib = nullptr;
 
   float mMUS2TPCTimeBins = 5.0098627;
   float mITSROFrameLengthMUS = 0; ///< ITS RO frame in mus
   float mMFTROFrameLengthMUS = 0; ///< MFT RO frame in mus
   float mTPCBin2MUS = 0;
+  float mEMCALMaxCellTime = 100.;  ///< EMCAL cell time cut (in ns)
+  float mEMCALMinCellEnergy = 0.3; ///< EMCAL cell energy cut (in GeV)
   static int BCDiffErrCount;
   const o2::vertexing::PVertexerParams* mPVParams = nullptr;
 };

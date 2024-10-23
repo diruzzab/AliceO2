@@ -13,9 +13,7 @@
 
 #include "TFile.h"
 
-#include "Framework/DataDescriptorQueryBuilder.h"
 #include "Framework/DataDescriptorMatcher.h"
-#include "Framework/DataSpecUtils.h"
 #include "Framework/InputSpec.h"
 
 #include "rapidjson/fwd.h"
@@ -53,8 +51,6 @@ struct DataOutputDescriptor {
  private:
   std::string mfilenameBase;
   std::string* mfilenameBasePtr = nullptr;
-
-  std::string remove_ws(const std::string& s);
 };
 
 struct DataOutputDirector {

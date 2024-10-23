@@ -38,21 +38,21 @@ GPUReconstructionOCL2Backend::GPUReconstructionOCL2Backend(const GPUSettingsDevi
 {
 }
 
-template <class T, int I, typename... Args>
-int GPUReconstructionOCL2Backend::runKernelBackend(krnlSetup& _xyz, const Args&... args)
+template <class T, int32_t I, typename... Args>
+int32_t GPUReconstructionOCL2Backend::runKernelBackend(const krnlSetupArgs<T, I, Args...>& args)
 {
-  cl_kernel k = _xyz.y.num > 1 ? getKernelObject<cl_kernel, T, I, true>() : getKernelObject<cl_kernel, T, I, false>();
-  return runKernelBackendCommon(_xyz, k, args...);
+  cl_kernel k = args.s.y.num > 1 ? getKernelObject<cl_kernel, T, I, true>() : getKernelObject<cl_kernel, T, I, false>();
+  return std::apply([this, &args, &k](auto&... vals) { return runKernelBackendInternal(args.s, k, vals...); }, args.v);
 }
 
-template <class S, class T, int I, bool MULTI>
+template <class S, class T, int32_t I, bool MULTI>
 S& GPUReconstructionOCL2Backend::getKernelObject()
 {
-  static unsigned int krnl = FindKernel<T, I>(MULTI ? 2 : 1);
+  static uint32_t krnl = FindKernel<T, I>(MULTI ? 2 : 1);
   return mInternals->kernels[krnl].first;
 }
 
-int GPUReconstructionOCL2Backend::GetOCLPrograms()
+int32_t GPUReconstructionOCL2Backend::GetOCLPrograms()
 {
   char platform_version[256] = {};
   GPUFailedMsg(clGetPlatformInfo(mInternals->platform, CL_PLATFORM_VERSION, sizeof(platform_version), platform_version, nullptr));
@@ -64,7 +64,7 @@ int GPUReconstructionOCL2Backend::GetOCLPrograms()
   const char* ocl_flags = GPUCA_M_STR(OCL_FLAGS);
 
 #ifdef OPENCL2_ENABLED_SPIRV // clang-format off
-  if (ver >= 2.2) {
+  if (ver >= 2.2f) {
     GPUInfo("Reading OpenCL program from SPIR-V IL (Platform version %f)", ver);
     mInternals->program = clCreateProgramWithIL(mInternals->context, _binary_GPUReconstructionOCL2Code_spirv_start, _binary_GPUReconstructionOCL2Code_spirv_len, &ocl_error);
     ocl_flags = "";
@@ -95,17 +95,17 @@ int GPUReconstructionOCL2Backend::GetOCLPrograms()
     return 1;
   }
 
-#define GPUCA_KRNL(x_class, x_attributes, x_arguments, x_forward) \
-  GPUCA_KRNL_WRAP(GPUCA_KRNL_LOAD_, x_class, x_attributes, x_arguments, x_forward)
-#define GPUCA_KRNL_LOAD_single(x_class, x_attributes, x_arguments, x_forward) \
-  if (AddKernel<GPUCA_M_KRNL_TEMPLATE(x_class)>(false)) {                     \
-    return 1;                                                                 \
+#define GPUCA_KRNL(...) \
+  GPUCA_KRNL_WRAP(GPUCA_KRNL_LOAD_, __VA_ARGS__)
+#define GPUCA_KRNL_LOAD_single(x_class, ...)              \
+  if (AddKernel<GPUCA_M_KRNL_TEMPLATE(x_class)>(false)) { \
+    return 1;                                             \
   }
-#define GPUCA_KRNL_LOAD_multi(x_class, x_attributes, x_arguments, x_forward) \
-  if (AddKernel<GPUCA_M_KRNL_TEMPLATE(x_class)>(true)) {                     \
-    return 1;                                                                \
+#define GPUCA_KRNL_LOAD_multi(x_class, ...)              \
+  if (AddKernel<GPUCA_M_KRNL_TEMPLATE(x_class)>(true)) { \
+    return 1;                                            \
   }
-#include "GPUReconstructionKernels.h"
+#include "GPUReconstructionKernelList.h"
 #undef GPUCA_KRNL
 #undef GPUCA_KRNL_LOAD_single
 #undef GPUCA_KRNL_LOAD_multi
@@ -113,7 +113,7 @@ int GPUReconstructionOCL2Backend::GetOCLPrograms()
   return 0;
 }
 
-bool GPUReconstructionOCL2Backend::CheckPlatform(unsigned int i)
+bool GPUReconstructionOCL2Backend::CheckPlatform(uint32_t i)
 {
   char platform_version[64] = {}, platform_vendor[64] = {};
   clGetPlatformInfo(mInternals->platforms[i], CL_PLATFORM_VERSION, sizeof(platform_version), platform_version, nullptr);

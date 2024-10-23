@@ -32,6 +32,8 @@ struct StrangenessTrackingParamConfig : public o2::conf::ConfigurableParamHelper
   float mMinMotherClus = 3.;   // minimum number of cluster to be attached to the mother
   float mMaxChi2 = 50;         // Maximum matching chi2
   bool mVertexMatching = true; // Flag to enable/disable vertex matching
+  bool mSkipTPC = true;        // Flag to enable/disable TPC only tracks
+  bool mSkip3Body = false;     // Flag to enable/disable Decay3Body tracking
 
   O2ParamDef(StrangenessTrackingParamConfig, "strtracker");
 };

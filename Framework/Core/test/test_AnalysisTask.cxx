@@ -132,9 +132,11 @@ struct TestCCDBObject {
 
 struct KTask {
   struct : public ConfigurableGroup {
+    std::string prefix = "foo";
     Configurable<int> anInt{"someConfigurable", {}, "Some Configurable Object"};
     Configurable<int> anotherInt{"someOtherConfigurable", {}, "Some Configurable Object"};
   } foo;
+
   Configurable<int> anThirdInt{"someThirdConfigurable", {}, "Some Configurable Object"};
   struct : public ConditionGroup {
     Condition<TestCCDBObject> test{"path"};
@@ -145,7 +147,10 @@ struct KTask {
 
 struct LTask {
   SliceCache cache;
+  Preslice<aod::Tracks> perCol = aod::track::collisionId;
+  PresliceOptional<aod::Tracks> perPart = aod::mctracklabel::mcParticleId;
   PresliceUnsorted<aod::McCollisionLabels> perMcCol = aod::mccollisionlabel::mcCollisionId;
+  PresliceUnsortedOptional<aod::Collisions> perMcColopt = aod::mccollisionlabel::mcCollisionId;
   void process(aod::McCollision const&, soa::SmallGroups<soa::Join<aod::Collisions, aod::McCollisionLabels>> const&) {}
 };
 
@@ -153,6 +158,7 @@ TEST_CASE("AdaptorCompilation")
 {
   auto cfgc = makeEmptyConfigContext();
 
+  REQUIRE(brace_constructible_size<ATask>() == 1);
   auto task1 = adaptAnalysisTask<ATask>(*cfgc, TaskName{"test1"});
   REQUIRE(task1.inputs.size() == 2);
   REQUIRE(task1.outputs.size() == 1);
@@ -227,7 +233,7 @@ TEST_CASE("TestPartitionIteration")
   auto tableA = builderA.finalize();
   REQUIRE(tableA->num_rows() == 8);
 
-  using TestA = o2::soa::Table<o2::soa::Index<>, aod::test::X, aod::test::Y>;
+  using TestA = o2::soa::Table<o2::framework::OriginEnc{"AOD"}, o2::soa::Index<>, aod::test::X, aod::test::Y>;
   using FilteredTest = o2::soa::Filtered<TestA>;
   using PartitionTest = Partition<TestA>;
   using PartitionFilteredTest = Partition<o2::soa::Filtered<TestA>>;
@@ -237,7 +243,7 @@ TEST_CASE("TestPartitionIteration")
   TestA testA{tableA};
 
   PartitionTest p1 = aod::test::x < 4.0f;
-  p1.setTable(testA);
+  p1.bindTable(testA);
   REQUIRE(4 == p1.size());
   REQUIRE(p1.begin() != p1.end());
   auto i = 0;
@@ -253,7 +259,7 @@ TEST_CASE("TestPartitionIteration")
   auto selection = expressions::createSelection(testA.asArrowTable(), f1);
   FilteredTest filtered{{testA.asArrowTable()}, o2::soa::selectionToVector(selection)};
   PartitionFilteredTest p2 = aod::test::y > 9.0f;
-  p2.setTable(filtered);
+  p2.bindTable(filtered);
 
   REQUIRE(2 == p2.size());
   i = 0;
@@ -266,7 +272,7 @@ TEST_CASE("TestPartitionIteration")
   REQUIRE(i == 2);
 
   PartitionNestedFilteredTest p3 = aod::test::x < 3.0f;
-  p3.setTable(*(p2.mFiltered));
+  p3.bindTable(*(p2.mFiltered));
   REQUIRE(1 == p3.size());
   i = 0;
   for (auto& p : p3) {

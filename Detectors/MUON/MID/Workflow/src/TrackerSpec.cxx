@@ -80,20 +80,20 @@ class TrackerDeviceDPL
     if (mIsMC) {
       std::unique_ptr<const o2::dataformats::MCTruthContainer<MCClusterLabel>> labels = pc.inputs().get<const o2::dataformats::MCTruthContainer<MCClusterLabel>*>("mid_clusterlabels");
       mTrackLabeler.process(mTracker->getClusters(), tracks, *labels);
-      pc.outputs().snapshot(of::Output{"MID", "TRACKLABELS", 0, of::Lifetime::Timeframe}, mTrackLabeler.getTracksLabels());
+      pc.outputs().snapshot(of::Output{"MID", "TRACKLABELS", 0}, mTrackLabeler.getTracksLabels());
       LOG(debug) << "Sent " << mTrackLabeler.getTracksLabels().size() << " indexed tracks.";
-      pc.outputs().snapshot(of::Output{"MID", "TRCLUSLABELS", 0, of::Lifetime::Timeframe}, mTrackLabeler.getTrackClustersLabels());
+      pc.outputs().snapshot(of::Output{"MID", "TRCLUSLABELS", 0}, mTrackLabeler.getTrackClustersLabels());
       LOG(debug) << "Sent " << mTrackLabeler.getTrackClustersLabels().getIndexedSize() << " indexed track clusters.";
     }
 
-    pc.outputs().snapshot(of::Output{"MID", "TRACKS", 0, of::Lifetime::Timeframe}, tracks);
+    pc.outputs().snapshot(of::Output{"MID", "TRACKS", 0}, tracks);
     LOG(debug) << "Sent " << tracks.size() << " tracks.";
-    pc.outputs().snapshot(of::Output{"MID", "TRACKCLUSTERS", 0, of::Lifetime::Timeframe}, mTracker->getClusters());
+    pc.outputs().snapshot(of::Output{"MID", "TRACKCLUSTERS", 0}, mTracker->getClusters());
     LOG(debug) << "Sent " << mTracker->getClusters().size() << " track clusters.";
 
-    pc.outputs().snapshot(of::Output{"MID", "TRACKROFS", 0, of::Lifetime::Timeframe}, mTracker->getTrackROFRecords());
+    pc.outputs().snapshot(of::Output{"MID", "TRACKROFS", 0}, mTracker->getTrackROFRecords());
     LOG(debug) << "Sent " << mTracker->getTrackROFRecords().size() << " ROFs.";
-    pc.outputs().snapshot(of::Output{"MID", "TRCLUSROFS", 0, of::Lifetime::Timeframe}, mTracker->getClusterROFRecords());
+    pc.outputs().snapshot(of::Output{"MID", "TRCLUSROFS", 0}, mTracker->getClusterROFRecords());
     LOG(debug) << "Sent " << mTracker->getClusterROFRecords().size() << " ROFs.";
 
     mTimer += std::chrono::high_resolution_clock::now() - tStart;
@@ -102,14 +102,24 @@ class TrackerDeviceDPL
 
   void finaliseCCDB(o2::framework::ConcreteDataMatcher& matcher, void* obj)
   {
-    if (mCheckMasked && matcher == of::ConcreteDataMatcher(header::gDataOriginMID, "MASKED_CHANNELS", 0)) {
-      LOG(info) << "Update MID_MASKED_CHANNELS";
-      auto* badChannels = static_cast<std::vector<ColumnData>*>(obj);
-      mHitMapBuilder->setMaskedChannels(*badChannels);
-      return;
-    }
     if (o2::base::GRPGeomHelper::instance().finaliseCCDB(matcher, obj)) {
       return;
+    }
+    if (mCheckMasked) {
+      bool rebuildMaskedChannels = false;
+      if (matcher == of::ConcreteDataMatcher(header::gDataOriginMID, "BAD_CH_TRK", 0)) {
+        LOG(info) << "Update MID_BAD_CH_TRK";
+        mBadChannels = *static_cast<std::vector<ColumnData>*>(obj);
+        rebuildMaskedChannels = true;
+      } else if (matcher == of::ConcreteDataMatcher(header::gDataOriginMID, "REJECTLIST_TRK", 0)) {
+        LOG(info) << "Update MID_REJECTLIST_TRK";
+        mRejectList = *static_cast<std::vector<ColumnData>*>(obj);
+        rebuildMaskedChannels = true;
+      }
+      if (rebuildMaskedChannels) {
+        mHitMapBuilder->setMaskedChannels(mBadChannels, true);
+        mHitMapBuilder->setMaskedChannels(mRejectList, false);
+      }
     }
   }
 
@@ -129,6 +139,7 @@ class TrackerDeviceDPL
       mHitMapBuilder = std::make_unique<HitMapBuilder>(geoTrans);
     }
     pc.inputs().get<std::vector<ColumnData>*>("mid_bad_channels_forTracks");
+    pc.inputs().get<std::vector<ColumnData>*>("mid_rejectlist_forTracks");
   }
 
   bool mIsMC = false;
@@ -142,6 +153,8 @@ class TrackerDeviceDPL
   std::chrono::duration<double> mTimerTracker{0}; ///< tracker timer
   std::chrono::duration<double> mTimerBuilder{0}; ///< hit map builder timer
   unsigned int mNROFs{0};                         /// Total number of processed ROFs
+  std::vector<ColumnData> mBadChannels{};         ///< Bad channels
+  std::vector<ColumnData> mRejectList{};          ///< Reject list
 };
 
 framework::DataProcessorSpec getTrackerSpec(bool isMC, bool checkMasked)
@@ -149,7 +162,8 @@ framework::DataProcessorSpec getTrackerSpec(bool isMC, bool checkMasked)
   std::vector<of::InputSpec> inputSpecs;
   inputSpecs.emplace_back("mid_clusters", header::gDataOriginMID, "CLUSTERS");
   inputSpecs.emplace_back("mid_clusters_rof", header::gDataOriginMID, "CLUSTERSROF");
-  inputSpecs.emplace_back("mid_bad_channels_forTracks", header::gDataOriginMID, "MASKED_CHANNELS", 0, of::Lifetime::Condition, of::ccdbParamSpec("MID/Calib/BadChannels"));
+  inputSpecs.emplace_back("mid_bad_channels_forTracks", header::gDataOriginMID, "BAD_CH_TRK", 0, of::Lifetime::Condition, of::ccdbParamSpec("MID/Calib/BadChannels"));
+  inputSpecs.emplace_back("mid_rejectlist_forTracks", header::gDataOriginMID, "REJECTLIST_TRK", 0, of::Lifetime::Condition, of::ccdbParamSpec("MID/Calib/RejectList"));
   auto ggRequest = std::make_shared<o2::base::GRPGeomRequest>(false,                             // orbitResetTime
                                                               false,                             // GRPECS=true
                                                               false,                             // GRPLHCIF

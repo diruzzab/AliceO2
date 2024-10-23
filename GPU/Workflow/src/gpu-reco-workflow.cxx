@@ -28,6 +28,7 @@
 #include "Algorithm/RangeTokenizer.h"
 #include "GlobalTrackingWorkflowHelpers/InputHelper.h"
 #include "ReconstructionDataFormats/GlobalTrackID.h"
+#include "TPCCalibration/CorrectionMapsLoader.h"
 
 #include <unordered_map>
 #include <numeric>
@@ -37,7 +38,7 @@ using namespace o2::dataformats;
 using namespace o2::gpu;
 using CompletionPolicyData = std::vector<InputSpec>;
 static CompletionPolicyData gPolicyData;
-static constexpr unsigned long gTpcSectorMask = 0xFFFFFFFFF;
+static constexpr uint64_t gTpcSectorMask = 0xFFFFFFFFF;
 static std::function<bool(o2::framework::DataProcessingHeader::StartTime)>* gPolicyOrderCheck;
 static std::shared_ptr<GPURecoWorkflowSpec> gTask;
 
@@ -50,15 +51,18 @@ void customize(std::vector<ConfigParamSpec>& workflowOptions)
 {
 
   std::vector<ConfigParamSpec> options{
-    {"input-type", VariantType::String, "digits", {"digitizer, digits, zsraw, zsonthefly, clustersnative, compressed-clusters-root, compressed-clusters-ctf, trd-tracklets"}},
-    {"output-type", VariantType::String, "tracks", {"clustersnative, tracks, compressed-clusters-ctf, qa, no-shared-cluster-map, send-clusters-per-sector, trd-tracks, error-qa, tpc-triggers"}},
-    {"require-ctp-lumi", VariantType::Bool, false, {"require CTP lumi for TPC correction scaling"}},
+    {"input-type", VariantType::String, "digits", {"digitizer, digits, zsraw, zsonthefly, clustersnative, compressed-clusters-root, compressed-clusters-ctf, trd-tracklets, its-clusters"}},
+    {"output-type", VariantType::String, "tracks", {"clustersnative, tracks, compressed-clusters-ctf, qa, no-shared-cluster-map, send-clusters-per-sector, trd-tracks, error-qa, tpc-triggers, its-tracks"}},
+    {"corrmap-lumi-mode", VariantType::Int, 0, {"scaling mode: (default) 0 = static + scale * full; 1 = full + scale * derivative"}},
     {"disable-root-input", VariantType::Bool, true, {"disable root-files input reader"}},
     {"disable-mc", VariantType::Bool, false, {"disable sending of MC information"}},
     {"ignore-dist-stf", VariantType::Bool, false, {"do not subscribe to FLP/DISTSUBTIMEFRAME/0 message (no lost TF recovery)"}},
     {"configKeyValues", VariantType::String, "", {"Semicolon separated key=value strings (e.g.: 'TPCHwClusterer.peakChargeThreshold=4;...')"}},
     {"configFile", VariantType::String, "", {"configuration file for configurable parameters"}},
-    {"enableDoublePipeline", VariantType::Bool, false, {"enable GPU double pipeline mode"}}};
+    {"enableDoublePipeline", VariantType::Bool, false, {"enable GPU double pipeline mode"}},
+    {"tpc-deadMap-sources", VariantType::Int, -1, {"Sources to consider for TPC dead channel map creation; -1=all, 0=deactivated"}},
+  };
+  o2::tpc::CorrectionMapsLoader::addGlobalOptions(options);
   o2::raw::HBFUtilsInitializer::addConfigOption(options);
   std::swap(workflowOptions, options);
 }
@@ -103,6 +107,7 @@ enum struct ioType { Digits,
                      SendClustersPerSector,
                      ITSClusters,
                      ITSTracks,
+                     MeanVertex,
                      TPCTriggers };
 
 static const std::unordered_map<std::string, ioType> InputMap{
@@ -113,7 +118,9 @@ static const std::unordered_map<std::string, ioType> InputMap{
   {"compressed-clusters-root", ioType::CompClustROOT},
   {"compressed-clusters-ctf", ioType::CompClustCTF},
   {"trd-tracklets", ioType::TRDTracklets},
-  {"its-clusters", ioType::ITSClusters}};
+  {"its-clusters", ioType::ITSClusters},
+  {"its-mean-vertex", ioType::MeanVertex},
+};
 
 static const std::unordered_map<std::string, ioType> OutputMap{
   {"clusters", ioType::Clusters},
@@ -130,13 +137,12 @@ static const std::unordered_map<std::string, ioType> OutputMap{
 WorkflowSpec defineDataProcessing(ConfigContext const& cfgc)
 {
   WorkflowSpec specs;
-  std::vector<int> tpcSectors(o2::tpc::Sector::MAXSECTOR);
+  std::vector<int32_t> tpcSectors(o2::tpc::Sector::MAXSECTOR);
   std::iota(tpcSectors.begin(), tpcSectors.end(), 0);
 
   auto inputType = cfgc.options().get<std::string>("input-type");
-  auto requireCTPLumi = cfgc.options().get<bool>("require-ctp-lumi");
   bool doMC = !cfgc.options().get<bool>("disable-mc");
-
+  auto sclOpt = o2::tpc::CorrectionMapsLoader::parseGlobalOptions(cfgc.options());
   o2::conf::ConfigurableParam::updateFromFile(cfgc.options().get<std::string>("configFile"));
   o2::conf::ConfigurableParam::updateFromString(cfgc.options().get<std::string>("configKeyValues"));
   o2::conf::ConfigurableParam::writeINI("o2gpurecoworkflow_configuration.ini");
@@ -155,7 +161,10 @@ WorkflowSpec defineDataProcessing(ConfigContext const& cfgc)
 
   GPURecoWorkflowSpec::Config cfg;
   cfg.runTPCTracking = true;
-  cfg.requireCTPLumi = requireCTPLumi;
+  cfg.lumiScaleType = sclOpt.lumiType;
+  cfg.lumiScaleMode = sclOpt.lumiMode;
+  cfg.enableMShape = sclOpt.enableMShapeCorrection;
+  cfg.enableCTPLumi = sclOpt.requestCTPLumi;
   cfg.decompressTPC = isEnabled(inputTypes, ioType::CompClustCTF);
   cfg.decompressTPCFromROOT = isEnabled(inputTypes, ioType::CompClustROOT);
   cfg.zsDecoder = isEnabled(inputTypes, ioType::ZSRaw);
@@ -175,6 +184,9 @@ WorkflowSpec defineDataProcessing(ConfigContext const& cfgc)
   cfg.runTRDTracking = isEnabled(outputTypes, ioType::TRDTracks);
   cfg.tpcTriggerHandling = isEnabled(outputTypes, ioType::TPCTriggers) || cfg.caClusterer;
   cfg.enableDoublePipeline = cfgc.options().get<bool>("enableDoublePipeline");
+  cfg.tpcDeadMapSources = cfgc.options().get<int32_t>("tpc-deadMap-sources");
+  cfg.runITSTracking = isEnabled(outputTypes, ioType::ITSTracks);
+  cfg.itsOverrBeamEst = isEnabled(inputTypes, ioType::MeanVertex);
 
   Inputs ggInputs;
   auto ggRequest = std::make_shared<o2::base::GRPGeomRequest>(false, true, false, true, true, o2::base::GRPGeomRequest::Aligned, ggInputs, true);

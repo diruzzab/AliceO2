@@ -9,27 +9,29 @@
 // granted to it by virtue of its status as an Intergovernmental Organization
 // or submit itself to any jurisdiction.
 
-#include <map>
-#include <list>
-#include <fstream>
+#include <unordered_map>
 #include <getopt.h>
 
 #include "TSystem.h"
+#include "TStopwatch.h"
+#include "TString.h"
+#include "TRegexp.h"
 #include "TFile.h"
 #include "TTree.h"
+#include "TBranch.h"
 #include "TList.h"
 #include "TKey.h"
 #include "TDirectory.h"
 #include "TObjString.h"
-#include <TGrid.h>
-#include <TMap.h>
-#include <TLeaf.h>
+#include "TGrid.h"
+#include "TMap.h"
+#include "TLeaf.h"
 
 #include "aodMerger.h"
 
 // AOD reduction tool
 //   Designed for the 2022 pp data with specific selections:
-//   - Remove all TPC only tracks
+//   - Remove all TPC only tracks, optionally keep TPC-only V0 tracks
 //   - Remove all V0s which refer to any removed track
 //   - Remove all cascade which refer to any removed V0
 //   - Remove all ambiguous track entries which point to a track with collision
@@ -38,30 +40,45 @@ int main(int argc, char* argv[])
 {
   std::string inputFileName("AO2D.root");
   std::string outputFileName("AO2D_thinned.root");
-  int exitCode = 0; // 0: success, >0: failure
+  int exitCode = 0; // 0: success, !=0: failure
+  bool bOverwrite = false;
 
   int option_index = 1;
+
+  const char* const short_opts = "i:o:KOh";
   static struct option long_options[] = {
-    {"input", required_argument, nullptr, 0},
-    {"output", required_argument, nullptr, 1},
-    {"help", no_argument, nullptr, 2},
+    {"input", required_argument, nullptr, 'i'},
+    {"output", required_argument, nullptr, 'o'},
+    {"overwrite", no_argument, nullptr, 'O'},
+    {"help", no_argument, nullptr, 'h'},
     {nullptr, 0, nullptr, 0}};
 
   while (true) {
-    int c = getopt_long(argc, argv, "", long_options, &option_index);
-    if (c == -1) {
-      break;
-    } else if (c == 0) {
-      inputFileName = optarg;
-    } else if (c == 1) {
-      outputFileName = optarg;
-    } else if (c == 2) {
-      printf("AO2D thinning tool. Options: \n");
-      printf("  --input <inputfile.root>     Contains input file path to the file to be thinned. Default: %s\n", inputFileName.c_str());
-      printf("  --output <outputfile.root>   Target output ROOT file. Default: %s\n", outputFileName.c_str());
-      return -1;
-    } else {
-      return -2;
+    const auto opt = getopt_long(argc, argv, short_opts, long_options, &option_index);
+    if (opt == -1) {
+      break; // use defaults
+    }
+    switch (opt) {
+      case 'i':
+        inputFileName = optarg;
+        break;
+      case 'o':
+        outputFileName = optarg;
+        break;
+      case 'O':
+        bOverwrite = true;
+        printf("Overwriting existing output file if existing\n");
+        break;
+      case 'h':
+      case '?':
+      default:
+        printf("AO2D thinning tool. Options: \n");
+        printf("  --input/-i <inputfile.root>     Contains input file path to the file to be thinned. Default: %s\n", inputFileName.c_str());
+        printf("  --output/-o <outputfile.root>   Target output ROOT file. Default: %s\n", outputFileName.c_str());
+        printf("\n");
+        printf("  Optional Arguments:\n");
+        printf("  --overwrite/-O                  Overwrite existing output file\n");
+        return -1;
     }
   }
 
@@ -69,7 +86,14 @@ int main(int argc, char* argv[])
   printf("  Input file: %s\n", inputFileName.c_str());
   printf("  Ouput file name: %s\n", outputFileName.c_str());
 
-  auto outputFile = TFile::Open(outputFileName.c_str(), "RECREATE", "", 501);
+  TStopwatch clock;
+  clock.Start(kTRUE);
+
+  auto outputFile = TFile::Open(outputFileName.c_str(), (bOverwrite) ? "RECREATE" : "CREATE", "", 505);
+  if (outputFile == nullptr) {
+    printf("Error: File %s exists or cannot be created!\n", outputFileName.c_str());
+    return 1;
+  }
   TDirectory* outputDir = nullptr;
 
   if (inputFileName.find("alien:") == 0) {
@@ -87,18 +111,21 @@ int main(int argc, char* argv[])
   keyList->Sort();
 
   for (auto key1 : *keyList) {
+    // Keep metaData
     if (((TObjString*)key1)->GetString().EqualTo("metaData")) {
       auto metaData = (TMap*)inputFile->Get("metaData");
       outputFile->cd();
       metaData->Write("metaData", TObject::kSingleKey);
     }
 
+    // Keep parentFiles
     if (((TObjString*)key1)->GetString().EqualTo("parentFiles")) {
       auto parentFiles = (TMap*)inputFile->Get("parentFiles");
       outputFile->cd();
       parentFiles->Write("parentFiles", TObject::kSingleKey);
     }
 
+    // Skip everything else, except 'DF_*'
     if (!((TObjString*)key1)->GetString().BeginsWith("DF_")) {
       continue;
     }
@@ -131,15 +158,33 @@ int main(int argc, char* argv[])
       }
     }
 
+    // Scan versions e.g. 001 or 002 ...
+    TString v0Name{"O2v0_???"}, trkExtraName{"O2trackextra*"};
+    TRegexp v0Re(v0Name, kTRUE), trkExtraRe(trkExtraName, kTRUE);
+    bool hasTrackQA{false};
+    TString trackQAName{"O2trackqa*"};
+    TRegexp trackQARe(trackQAName, kTRUE);
+    for (TObject* obj : *treeList) {
+      TString st = obj->GetName();
+      if (st.Index(v0Re) != kNPOS) {
+        v0Name = st;
+      } else if (st.Index(trkExtraRe) != kNPOS) {
+        trkExtraName = st;
+      } else if (st.Index(trackQARe) != kNPOS) {
+        hasTrackQA = true;
+        trackQAName = st;
+      }
+    }
+
     // Certain order needed in order to populate vectors of skipped entries
-    auto v0Entry = (TObject*)treeList->FindObject("O2v0_001");
+    auto v0Entry = (TObject*)treeList->FindObject(v0Name);
     treeList->Remove(v0Entry);
     treeList->AddFirst(v0Entry);
 
     // Prepare maps for track skimming
-    auto trackExtraTree = (TTree*)inputFile->Get(Form("%s/%s", dfName, "O2trackextra")); // for example we can use this line to access the track table
+    auto trackExtraTree = (TTree*)inputFile->Get(Form("%s/%s", dfName, trkExtraName.Data()));
     if (trackExtraTree == nullptr) {
-      printf("O2trackextra table not found\n");
+      printf("%s table not found\n", trkExtraName.Data());
       exitCode = 6;
       break;
     }
@@ -149,27 +194,87 @@ int main(int argc, char* argv[])
       exitCode = 7;
       break;
     }
-    auto v0s = (TTree*)inputFile->Get(Form("%s/%s", dfName, "O2v0_001"));
+    auto v0s = (TTree*)inputFile->Get(Form("%s/%s", dfName, v0Name.Data()));
     if (v0s == nullptr) {
-      printf("O2v0_001 table not found\n");
+      printf("%s table not found\n", v0Name.Data());
       exitCode = 8;
       break;
+    }
+    // TrackQA
+    TTree* trackQA;
+    if (hasTrackQA && (trackQA = (TTree*)inputFile->Get(Form("%s/%s", dfName, trackQAName.Data()))) == nullptr) {
+      exitCode = 20;
+      break;
+    }
+
+    // We need to loop over the V0s once and flag the prong indices
+    int trackIdxPos = 0, trackIdxNeg = 0;
+    std::vector<bool> keepV0s(trackExtraTree->GetEntries(), false);
+    v0s->SetBranchAddress("fIndexTracks_Pos", &trackIdxPos);
+    v0s->SetBranchAddress("fIndexTracks_Neg", &trackIdxNeg);
+    auto nV0s = v0s->GetEntriesFast();
+    for (int i{0}; i < nV0s; ++i) {
+      v0s->GetEntry(i);
+      keepV0s[trackIdxPos] = true;
+      keepV0s[trackIdxNeg] = true;
+    }
+
+    // TrackQA
+    std::vector<bool> keepTrackQA;
+    if (hasTrackQA) {
+      keepTrackQA.assign(trackExtraTree->GetEntries(), false);
+      trackQA->SetBranchAddress("fIndexTracks", &trackIdxPos);
+      for (int i{0}; i < trackQA->GetEntries(); ++i) {
+        trackQA->GetEntry(i);
+        keepTrackQA[trackIdxPos] = true;
+      }
     }
 
     std::vector<int> acceptedTracks(trackExtraTree->GetEntries(), -1);
     std::vector<bool> hasCollision(trackExtraTree->GetEntries(), false);
-    std::vector<int> keepV0s(v0s->GetEntries(), -1);
 
     uint8_t tpcNClsFindable = 0;
+    bool bTPClsFindable = false;
     uint8_t ITSClusterMap = 0;
+    UInt_t ITSClusterSizes = 0;
+    bool bITSClusterMap = false;
+    bool bITSClusterSizes = false;
     uint8_t TRDPattern = 0;
+    bool bTRDPattern = false;
     float_t TOFChi2 = 0;
-    // char16_t fTPCNClsFindableMinusFound = 0;
-    trackExtraTree->SetBranchAddress("fTPCNClsFindable", &tpcNClsFindable);
-    trackExtraTree->SetBranchAddress("fITSClusterMap", &ITSClusterMap);
-    trackExtraTree->SetBranchAddress("fTRDPattern", &TRDPattern);
-    trackExtraTree->SetBranchAddress("fTOFChi2", &TOFChi2);
-    // trackExtraTree->SetBranchAddress("fTPCNClsFindableMinusFound", &fTPCNClsFindableMinusFound);
+    bool bTOFChi2 = false;
+
+    // Test if track properties exist
+    TBranch* br = nullptr;
+    TIter next(trackExtraTree->GetListOfBranches());
+    while ((br = (TBranch*)next())) {
+      TString brName = br->GetName();
+      if (brName == "fTPCNClsFindable") {
+        trackExtraTree->SetBranchAddress("fTPCNClsFindable", &tpcNClsFindable);
+        bTPClsFindable = true;
+      } else if (brName == "fITSClusterMap") {
+        trackExtraTree->SetBranchAddress("fITSClusterMap", &ITSClusterMap);
+        bITSClusterMap = true;
+      } else if (brName == "fITSClusterSizes") {
+        trackExtraTree->SetBranchAddress("fITSClusterSizes", &ITSClusterSizes);
+        bITSClusterSizes = true;
+      } else if (brName == "fTRDPattern") {
+        trackExtraTree->SetBranchAddress("fTRDPattern", &TRDPattern);
+        bTRDPattern = true;
+      } else if (brName == "fTOFChi2") {
+        trackExtraTree->SetBranchAddress("fTOFChi2", &TOFChi2);
+        bTOFChi2 = true;
+      }
+    }
+
+    // Sanity-Check
+    // If any (%ITSClusterMap or %ITSClusterSizes) of these are not found, continuation is not possible, hence fataling
+    if (!bTPClsFindable || !bTRDPattern || !bTOFChi2 ||
+        (!bITSClusterMap && !bITSClusterSizes)) {
+      printf("    *** FATAL *** Branch detection failed in %s for trackextra.[(fITSClusterMap=%d,fITSClusterSizes=%d),fTPCNClsFindable=%d,fTRDPattern=%d,fTOFChi2=%d]\n", dfName, bITSClusterMap, bITSClusterSizes, bTPClsFindable, bTRDPattern, bTOFChi2);
+      exitCode = 10;
+      break;
+    }
 
     int fIndexCollisions = 0;
     track_iu->SetBranchAddress("fIndexCollisions", &fIndexCollisions);
@@ -181,28 +286,34 @@ int main(int argc, char* argv[])
       trackExtraTree->GetEntry(i);
       track_iu->GetEntry(i);
 
-      // Remove TPC only tracks
-      if (tpcNClsFindable > 0. && ITSClusterMap == 0 && TRDPattern == 0 && TOFChi2 < -1.) {
+      // Flag collisions
+      hasCollision[i] = (fIndexCollisions >= 0);
+
+      // Remove TPC only tracks, if they are not assoc. to a V0
+      if (tpcNClsFindable > 0 && TRDPattern == 0 && TOFChi2 < -1. &&
+          (!bITSClusterMap || ITSClusterMap == 0) &&
+          (!bITSClusterSizes || ITSClusterSizes == 0) &&
+          (!hasTrackQA || !keepTrackQA[i]) &&
+          !keepV0s[i]) {
         counter++;
       } else {
         acceptedTracks[i] = i - counter;
       }
-      hasCollision[i] = (fIndexCollisions >= 0);
     }
 
     for (auto key2 : *treeList) {
-      auto treeName = ((TObjString*)key2)->GetString().Data();
-
-      auto inputTree = (TTree*)inputFile->Get(Form("%s/%s", dfName, treeName));
-      printf("    Processing tree %s with %lld entries with total size %lld\n", treeName, inputTree->GetEntries(), inputTree->GetTotBytes());
+      TString treeName = ((TObjString*)key2)->GetString().Data();
 
       // Connect trees but do not copy entries (using the clone function)
       // NOTE Basket size etc. are copied in CloneTree()
-      if (!outputDir) {
+      if (outputDir == nullptr) {
         outputDir = outputFile->mkdir(dfName);
         printf("Writing to output folder %s\n", dfName);
       }
       outputDir->cd();
+
+      auto inputTree = (TTree*)inputFile->Get(Form("%s/%s", dfName, treeName.Data()));
+      printf("    Processing tree %s with %lld entries with total size %lld\n", treeName.Data(), inputTree->GetEntries(), inputTree->GetTotBytes());
       auto outputTree = inputTree->CloneTree(0);
       outputTree->SetAutoFlush(0);
 
@@ -213,7 +324,7 @@ int main(int argc, char* argv[])
       for (int i = 0; i < branches->GetEntriesFast(); ++i) {
         TBranch* br = (TBranch*)branches->UncheckedAt(i);
         TString branchName(br->GetName());
-        TString tableName(getTableName(branchName, treeName));
+        TString tableName(getTableName(branchName, treeName.Data()));
         // register index of track index ONLY
         if (!tableName.EqualTo("O2track")) {
           continue;
@@ -243,16 +354,10 @@ int main(int argc, char* argv[])
         }
       }
 
-      bool processingTracks = memcmp(treeName, "O2track", 7) == 0; // matches any of the track tables
-      bool processingCascades = memcmp(treeName, "O2cascade", 9) == 0;
-      bool processingV0s = memcmp(treeName, "O2v0", 4) == 0;
-      bool processingAmbiguousTracks = memcmp(treeName, "O2ambiguoustrack", 16) == 0;
-
-      auto indexV0s = -1;
-      if (processingCascades) {
-        inputTree->SetBranchAddress("fIndexV0s", &indexV0s);
-        outputTree->SetBranchAddress("fIndexV0s", &indexV0s);
-      }
+      const bool processingTracked = treeName.BeginsWith("O2tracked");
+      const bool processingTrackQA = treeName.BeginsWith("O2trackqa");
+      const bool processingTracks = treeName.BeginsWith("O2track") && !processingTracked && !processingTrackQA; // matches any of the track tables and not tracked{v0s,cascase,3body} or trackqa;
+      const bool processingAmbiguousTracks = treeName.BeginsWith("O2ambiguoustrack");
 
       auto entries = inputTree->GetEntries();
       for (int i = 0; i < entries; i++) {
@@ -279,15 +384,6 @@ int main(int argc, char* argv[])
           }
         }
 
-        // Reassign v0 index of cascades
-        if (processingCascades) {
-          if (keepV0s[indexV0s] < 0) {
-            fillThisEntry = false;
-          } else {
-            indexV0s = keepV0s[indexV0s];
-          }
-        }
-
         // Keep only tracks which have no collision, see O2-3601
         if (processingAmbiguousTracks) {
           if (hasCollision[i]) {
@@ -297,14 +393,25 @@ int main(int argc, char* argv[])
 
         if (fillThisEntry) {
           outputTree->Fill();
-          if (processingV0s) {
-            keepV0s[i] = outputTree->GetEntries() - 1;
-          }
         }
       }
 
       if (entries != outputTree->GetEntries()) {
         printf("      Reduced from %lld to %lld entries\n", entries, outputTree->GetEntries());
+        // sanity check by hardcoding the trees for which we expect a reduction
+        const TString tableName{removeVersionSuffix(outputTree->GetName())};
+        static const std::array<TString, 4> checkNames{"O2track", "O2trackextra", "O2trackcov", "O2ambiguoustrack"}; // O2track -> O2track_iu; O2trackcov -> O2trackcov_iu
+        std::vector<bool> checks(checkNames.size(), false);
+        for (size_t i{0}; i < checkNames.size(); ++i) {
+          if (tableName.EqualTo(checkNames[i])) {
+            checks[i] = true;
+          }
+        }
+        if (std::none_of(checks.begin(), checks.end(), [](bool b) { return b; })) {
+          exitCode = 30;
+          printf("       -> Reduction is not expected for this tree!\n");
+          break;
+        }
       }
 
       delete inputTree;
@@ -335,8 +442,21 @@ int main(int argc, char* argv[])
   if (exitCode != 0) {
     printf("Removing incomplete output file %s.\n", outputFile->GetName());
     gSystem->Unlink(outputFile->GetName());
+    return exitCode; // skip output below
   }
 
+  clock.Stop();
+
+  // Report savings
+  auto sBefore = inputFile->GetSize();
+  auto sAfter = outputFile->GetSize();
+  if (sBefore <= 0 || sAfter <= 0) {
+    printf("Warning: Empty input or output file after thinning!\n");
+    exitCode = 9;
+  }
+  auto spaceSaving = (1 - ((double)sAfter) / ((double)sBefore)) * 100;
+  printf("Stats: After=%lld / Before=%lld Bytes ---> Saving %.1f%% diskspace!\n", sAfter, sBefore, spaceSaving);
+  printf("Timing: CPU=%.2f (s);   Real=%.2f (s)\n", clock.CpuTime(), clock.RealTime());
   printf("End of AOD thinning.\n");
 
   return exitCode;

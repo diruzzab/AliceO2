@@ -19,6 +19,8 @@
 #include <cassert>
 #include <gsl/span>
 #include <filesystem>
+#include <type_traits>
+#include <vector>
 namespace fs = std::filesystem;
 
 #include "Rtypes.h"
@@ -115,6 +117,47 @@ void writeValues(const std::string_view fileName, const DataMap& map, bool onlyF
   }
 }
 
+template <class T>
+struct is_map {
+  static constexpr bool value = false;
+};
+
+template <class Key, class Value>
+struct is_map<std::map<Key, Value>> {
+  static constexpr bool value = true;
+};
+/// fill cal pad object from HV data map
+/// TODO: Function to be tested
+template <typename DataMap, uint32_t SignificantBitsT = 0>
+typename std::enable_if_t<is_map<DataMap>::value, void>
+  fillCalPad(CalDet<float>& calPad, const DataMap& map)
+{
+  using namespace o2::tpc;
+  const auto& mapper = Mapper::instance();
+
+  for (const auto& [linkInfo, data] : map) {
+    const CRU cru(linkInfo.cru);
+    const PartitionInfo& partInfo = mapper.getMapPartitionInfo()[cru.partition()];
+    const int nFECs = partInfo.getNumberOfFECs();
+    const int fecOffset = (nFECs + 1) / 2;
+    const int fecInPartition = (linkInfo.globalLinkID < fecOffset) ? linkInfo.globalLinkID : fecOffset + linkInfo.globalLinkID % 12;
+
+    int hwChannel{0};
+    for (const auto& val : data) {
+      const auto& [sampaOnFEC, channelOnSAMPA] = getSampaInfo(hwChannel, cru);
+      const PadROCPos padROCPos = mapper.padROCPos(cru, fecInPartition, sampaOnFEC, channelOnSAMPA);
+      if constexpr (SignificantBitsT == 0) {
+        const float set = std::stof(val);
+        calPad.getCalArray(padROCPos.getROC()).setValue(padROCPos.getRow(), padROCPos.getPad(), set);
+      } else {
+        const float set = fixedSizeToFloat<SignificantBitsT>(uint32_t(std::stoi(val)));
+        calPad.getCalArray(padROCPos.getROC()).setValue(padROCPos.getRow(), padROCPos.getPad(), set);
+      }
+      ++hwChannel;
+    }
+  }
+}
+
 /// fill cal pad object from HW value stream
 template <uint32_t SignificantBitsT = 2>
 int fillCalPad(CalDet<float>& calPad, std::istream& infile)
@@ -172,7 +215,7 @@ int fillCalPad(CalDet<float>& calPad, gsl::span<const char> data)
   membuf sbuf((char*)data.data(), data.size());
   std::istream in(&sbuf);
 
-  return fillCalPad(calPad, in);
+  return fillCalPad<SignificantBitsT>(calPad, in);
 }
 
 /// create cal pad object from HW value file
@@ -195,7 +238,7 @@ o2::tpc::CalDet<float> getCalPad(const std::string_view fileName, const std::str
     return calPad;
   }
 
-  fillCalPad(calPad, infile);
+  fillCalPad<SignificantBitsT>(calPad, infile);
 
   if (outputFile.size()) {
     TFile f(outputFile.data(), "recreate");
@@ -204,7 +247,9 @@ o2::tpc::CalDet<float> getCalPad(const std::string_view fileName, const std::str
   return calPad;
 }
 
-std::unordered_map<std::string, CalPad> preparePedestalFiles(const CalPad& pedestals, const CalPad& noise, float sigmaNoise = 3, float minADC = 2, float pedestalOffset = 0, bool onlyFilled = false, bool maskBad = true, float noisyChannelThreshold = 1.5, float sigmaNoiseNoisyChannels = 4, float badChannelThreshold = 6, bool fixedSize = false);
+/// \param sigmaNoiseROCType can be either one value for all ROC types, or {IROC, OROC}, or {IROC, OROC1, OROC2, OROC3}
+/// \param minADCROCType can be either one value for all ROC types, or {IROC, OROC}, or {IROC, OROC1, OROC2, OROC3}
+std::unordered_map<std::string, CalPad> preparePedestalFiles(const CalPad& pedestals, const CalPad& noise, std::vector<float> sigmaNoiseROCType = {3, 3, 3, 3}, std::vector<float> minADCROCType = {2, 2, 2, 2}, float pedestalOffset = 0, bool onlyFilled = false, bool maskBad = true, float noisyChannelThreshold = 1.5, float sigmaNoiseNoisyChannels = 4, float badChannelThreshold = 6, bool fixedSize = false);
 
 } // namespace o2::tpc::cru_calib_helpers
 

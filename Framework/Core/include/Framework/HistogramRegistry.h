@@ -25,6 +25,7 @@
 
 #include <TDataMember.h>
 #include <TDataType.h>
+#include <TArrayL.h>
 
 #include <deque>
 
@@ -39,10 +40,14 @@ namespace o2::framework
  * Static helper class to fill root histograms of any type. Contains functionality to fill once per call or a whole (filtered) table at once.
  */
 //**************************************************************************************************
+template <typename T>
+concept FillValue = std::is_integral_v<T> || std::is_floating_point_v<T> || std::is_enum_v<T>;
+
 struct HistFiller {
   // fill any type of histogram (if weight was requested it must be the last argument)
   template <typename T, typename... Ts>
-  static void fillHistAny(std::shared_ptr<T> hist, const Ts&... positionAndWeight);
+  static void fillHistAny(std::shared_ptr<T> hist, Ts... positionAndWeight)
+    requires(FillValue<Ts> && ...);
 
   // fill any type of histogram with columns (Cs) of a filtered table (if weight is requested it must reside the last specified column)
   template <typename... Cs, typename R, typename T>
@@ -99,6 +104,8 @@ class HistogramRegistry
   std::shared_ptr<T> add(char const* const name, char const* const title, const HistogramConfigSpec& histConfigSpec, bool callSumw2 = false);
   template <typename T>
   std::shared_ptr<T> add(char const* const name, char const* const title, HistType histType, const std::vector<AxisSpec>& axes, bool callSumw2 = false);
+  template <typename T>
+  std::shared_ptr<T> add(const std::string& name, char const* const title, HistType histType, const std::vector<AxisSpec>& axes, bool callSumw2 = false);
 
   void addClone(const std::string& source, const std::string& target);
 
@@ -127,7 +134,8 @@ class HistogramRegistry
 
   // fill hist with values
   template <typename... Ts>
-  void fill(const HistName& histName, Ts&&... positionAndWeight);
+  void fill(const HistName& histName, Ts... positionAndWeight)
+    requires(FillValue<Ts> && ...);
 
   // fill hist with content of (filtered) table columns
   template <typename... Cs, typename T>
@@ -175,6 +183,7 @@ class HistogramRegistry
   void registerName(const std::string& name);
 
   std::string mName{};
+  uint32_t nameHash;
   OutputObjHandlingPolicy mPolicy{};
   bool mCreateRegistryDir{};
   bool mSortHistos{};
@@ -196,7 +205,8 @@ class HistogramRegistry
 //--------------------------------------------------------------------------------------------------
 
 template <typename T, typename... Ts>
-void HistFiller::fillHistAny(std::shared_ptr<T> hist, const Ts&... positionAndWeight)
+void HistFiller::fillHistAny(std::shared_ptr<T> hist, Ts... positionAndWeight)
+  requires(FillValue<Ts> && ...)
 {
   constexpr int nArgs = sizeof...(Ts);
 
@@ -362,6 +372,12 @@ std::shared_ptr<T> HistogramRegistry::add(char const* const name, char const* co
 }
 
 template <typename T>
+std::shared_ptr<T> HistogramRegistry::add(const std::string& name, char const* const title, HistType histType, const std::vector<AxisSpec>& axes, bool callSumw2)
+{
+  return add<T>(name.c_str(), title, histType, axes, callSumw2);
+}
+
+template <typename T>
 std::shared_ptr<T> HistogramRegistry::get(const HistName& histName)
 {
   if (auto histPtr = std::get_if<std::shared_ptr<T>>(&mRegistryValue[getHistIndex(histName)])) {
@@ -411,10 +427,15 @@ uint32_t HistogramRegistry::getHistIndex(const T& histName)
 }
 
 template <typename... Ts>
-void HistogramRegistry::fill(const HistName& histName, Ts&&... positionAndWeight)
+void HistogramRegistry::fill(const HistName& histName, Ts... positionAndWeight)
+  requires(FillValue<Ts> && ...)
 {
-  std::visit([&positionAndWeight...](auto&& hist) { HistFiller::fillHistAny(hist, std::forward<Ts>(positionAndWeight)...); }, mRegistryValue[getHistIndex(histName)]);
+  std::visit([positionAndWeight...](auto&& hist) { HistFiller::fillHistAny(hist, positionAndWeight...); }, mRegistryValue[getHistIndex(histName)]);
 }
+
+extern template void HistogramRegistry::fill(const HistName& histName, double);
+extern template void HistogramRegistry::fill(const HistName& histName, float);
+extern template void HistogramRegistry::fill(const HistName& histName, int);
 
 template <typename... Cs, typename T>
 void HistogramRegistry::fill(const HistName& histName, const T& table, const o2::framework::expressions::Filter& filter)

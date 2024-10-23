@@ -13,10 +13,8 @@
 
 #include "Framework/InputSpec.h"
 #include "Framework/OutputSpec.h"
-#include "Framework/ForwardRoute.h"
 #include "Framework/WorkflowSpec.h"
 #include "Framework/DataOutputDirector.h"
-#include "Framework/DataProcessorInfo.h"
 
 #include <cstddef>
 #include <vector>
@@ -140,6 +138,11 @@ struct TopoIndexInfo {
   friend std::ostream& operator<<(std::ostream& out, TopoIndexInfo const& info);
 };
 
+// Information about the policies which were derived for a given data processor.
+struct DataProcessorPoliciesInfo {
+  std::string completionPolicyName;
+};
+
 struct OutputObj {
   InputSpec spec;
   bool isdangling;
@@ -179,21 +182,6 @@ struct WorkflowHelpers {
   // @a ctx the context for the configuration phase
   static void injectServiceDevices(WorkflowSpec& workflow, ConfigContext const& ctx);
 
-  /// Helper functions to add AOD related internal devices.
-  /// FIXME: moved here until we have proper plugin based amendment
-  ///        of device injection
-  static void addMissingOutputsToReader(std::vector<OutputSpec> const& providedOutputs,
-                                        std::vector<InputSpec> const& requestedInputs,
-                                        DataProcessorSpec& publisher);
-  static void addMissingOutputsToSpawner(std::vector<OutputSpec> const& providedSpecials,
-                                         std::vector<InputSpec> const& requestedSpecials,
-                                         std::vector<InputSpec>& requestedAODs,
-                                         DataProcessorSpec& publisher);
-  static void addMissingOutputsToBuilder(std::vector<InputSpec> const& requestedSpecials,
-                                         std::vector<InputSpec>& requestedAODs,
-                                         std::vector<InputSpec>& requestedDYNs,
-                                         DataProcessorSpec& publisher);
-
   // Final adjustments to @a workflow after service devices have been injected.
   static void adjustTopology(WorkflowSpec& workflow, ConfigContext const& ctx);
 
@@ -227,6 +215,15 @@ struct WorkflowHelpers {
 
   /// returns only dangling outputs
   static std::vector<InputSpec> computeDanglingOutputs(WorkflowSpec const& workflow);
+
+  /// Validate that the nodes at the ends of the edges of the graph
+  /// are actually compatible with each other.
+  /// For example we should make sure that Lifetime::Timeframe inputs of
+  /// one node is not connected to an Output of Lifetime::Sporadic of another node.
+  static void validateEdges(WorkflowSpec const& workflow,
+                            std::vector<DataProcessorPoliciesInfo> const& policiesInfos,
+                            std::vector<DeviceConnectionEdge> const& edges,
+                            std::vector<OutputSpec> const& outputs);
 };
 
 } // namespace o2::framework

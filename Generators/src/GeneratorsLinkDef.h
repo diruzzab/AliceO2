@@ -73,4 +73,7 @@
 #pragma link C++ class o2::eventgen::GeneratorFileOrCmdParam + ;
 #pragma link C++ class o2::conf::ConfigurableParamHelper < o2::eventgen::GeneratorFileOrCmdParam> + ;
 
+#pragma link C++ class o2::eventgen::BoxGenerator + ;
+#pragma link C++ class o2::eventgen::FlowMapper + ;
+
 #endif

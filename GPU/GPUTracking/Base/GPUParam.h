@@ -54,20 +54,25 @@ struct GPUParam_t {
   S par;
 
   float bzkG;
-  float constBz;
+  float bzCLight;
   float qptB5Scaler;
 
-  GPUTPCGeometry tpcGeometry;              // TPC Geometry
-  GPUTPCGMPolynomialField polynomialField; // Polynomial approx. of magnetic field for TPC GM
+  int8_t dodEdxDownscaled;
+  int32_t continuousMaxTimeBin;
+
+  GPUTPCGeometry tpcGeometry;                       // TPC Geometry
+  GPUTPCGMPolynomialField polynomialField;          // Polynomial approx. of magnetic field for TPC GM
+  const uint32_t* occupancyMap;                     // Ptr to TPC occupancy map
+  uint32_t occupancyTotal;                          // Total occupancy in the TPC (nCl / nHbf)
 
   GPUParamSlice SliceParam[GPUCA_NSLICES];
 
  protected:
 #ifdef GPUCA_TPC_GEOMETRY_O2
-  float ParamErrors[2][4][4];
+  float ParamErrors[2][4][4]; // cluster error parameterization used during seeding and fit
 #else
-  float ParamErrorsSeeding0[2][3][4]; // cluster shape parameterization coeficients
-  float ParamS0Par[2][3][6]; // cluster error parameterization coeficients
+  float ParamErrorsSeeding0[2][3][4]; // cluster error parameterization used during seeding
+  float ParamS0Par[2][3][6];          // cluster error parameterization used during track fit
 #endif
 };
 } // namespace internal
@@ -80,12 +85,12 @@ struct GPUParam : public internal::GPUParam_t<GPUSettingsRec, GPUSettingsParam> 
   void SetDefaults(float solenoidBz);
   void SetDefaults(const GPUSettingsGRP* g, const GPUSettingsRec* r = nullptr, const GPUSettingsProcessing* p = nullptr, const GPURecoStepConfiguration* w = nullptr);
   void UpdateSettings(const GPUSettingsGRP* g, const GPUSettingsProcessing* p = nullptr, const GPURecoStepConfiguration* w = nullptr);
+  void UpdateBzOnly(float newSolenoidBz);
   void LoadClusterErrors(bool Print = 0);
-  o2::base::Propagator* GetDefaultO2Propagator(bool useGPUField = false) const;
   void UpdateRun3ClusterErrors(const float* yErrorParam, const float* zErrorParam);
 #endif
 
-  GPUd() float Alpha(int iSlice) const
+  GPUd() float Alpha(int32_t iSlice) const
   {
     if (iSlice >= GPUCA_NSLICES / 2) {
       iSlice -= GPUCA_NSLICES / 2;
@@ -95,16 +100,20 @@ struct GPUParam : public internal::GPUParam_t<GPUSettingsRec, GPUSettingsParam> 
     }
     return 0.174533f + par.dAlpha * iSlice;
   }
-  GPUd() float GetClusterErrorSeeding(int yz, int type, float z, float angle2) const;
-  GPUd() void GetClusterErrorsSeeding2(int row, float z, float sinPhi, float DzDs, float& ErrY2, float& ErrZ2) const;
-  GPUd() float GetSystematicClusterErrorIFC2(float x, float z, bool sideC) const;
+  GPUd() float GetClusterErrorSeeding(int32_t yz, int32_t type, float zDiff, float angle2, float unscaledMult) const;
+  GPUd() void GetClusterErrorsSeeding2(uint8_t sector, int32_t row, float z, float sinPhi, float DzDs, float time, float& ErrY2, float& ErrZ2) const;
+  GPUd() float GetSystematicClusterErrorIFC2(float trackX, float trackY, float z, bool sideC) const;
+  GPUd() float GetSystematicClusterErrorC122(float trackX, float trackY, uint8_t sector) const;
 
-  GPUd() float GetClusterError2(int yz, int type, float z, float angle2) const;
-  GPUd() void GetClusterErrors2(int row, float z, float sinPhi, float DzDs, float& ErrY2, float& ErrZ2) const;
-  GPUd() void UpdateClusterError2ByState(short clusterState, float& ErrY2, float& ErrZ2) const;
+  GPUd() float GetClusterError2(int32_t yz, int32_t type, float zDiff, float angle2, float unscaledMult, float scaledAvgInvCharge, float scaledInvCharge) const;
+  GPUd() void GetClusterErrors2(uint8_t sector, int32_t row, float z, float sinPhi, float DzDs, float time, float avgInvCharge, float invCharge, float& ErrY2, float& ErrZ2) const;
+  GPUd() void UpdateClusterError2ByState(int16_t clusterState, float& ErrY2, float& ErrZ2) const;
+  GPUd() float GetUnscaledMult(float time) const;
 
-  GPUd() void Slice2Global(int iSlice, float x, float y, float z, float* X, float* Y, float* Z) const;
-  GPUd() void Global2Slice(int iSlice, float x, float y, float z, float* X, float* Y, float* Z) const;
+  GPUd() void Slice2Global(int32_t iSlice, float x, float y, float z, float* X, float* Y, float* Z) const;
+  GPUd() void Global2Slice(int32_t iSlice, float x, float y, float z, float* X, float* Y, float* Z) const;
+
+  GPUd() bool rejectEdgeClusterByY(float uncorrectedY, int32_t iRow, float trackSigmaY) const;
 };
 #endif
 

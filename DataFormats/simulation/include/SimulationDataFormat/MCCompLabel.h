@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include "GPUCommonRtypes.h"
+#include <string>
 
 namespace o2
 {
@@ -128,7 +129,7 @@ class MCCompLabel
   int getEventID() const { return (mLabel >> nbitsTrackID) & maskEvID; }
   int getSourceID() const { return (mLabel >> (nbitsTrackID + nbitsEvID)) & maskSrcID; }
   uint64_t getTrackEventSourceID() const { return static_cast<uint64_t>(mLabel & maskFull); }
-  void get(int& trackID, int& evID, int& srcID, bool& fake)
+  void get(int& trackID, int& evID, int& srcID, bool& fake) const
   {
     /// parse label
     trackID = getTrackID();
@@ -138,6 +139,7 @@ class MCCompLabel
   }
 
   void print() const;
+  std::string asString() const;
 
   static constexpr int maxSourceID() { return maskSrcID; }
   static constexpr int maxEventID() { return maskEvID; }

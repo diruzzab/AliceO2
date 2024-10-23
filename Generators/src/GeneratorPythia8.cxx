@@ -21,13 +21,21 @@
 #include "SimulationDataFormat/MCEventHeader.h"
 #include "SimulationDataFormat/MCGenProperties.h"
 #include "SimulationDataFormat/ParticleStatus.h"
+#if PYTHIA_VERSION_INTEGER >= 8310
+#include "Pythia8/HIInfo.h"
+#else
 #include "Pythia8/HIUserHooks.h"
+#endif
 #include "Pythia8Plugins/PowhegHooks.h"
 #include "TSystem.h"
 #include "ZDCBase/FragmentParam.h"
+#include <CommonUtils/ConfigurationMacroHelper.h>
+#include <filesystem>
+#include <CommonUtils/FileSystemUtils.h>
 
 #include <iostream>
 #include <unordered_map>
+#include <numeric>
 
 namespace o2
 {
@@ -63,6 +71,46 @@ GeneratorPythia8::GeneratorPythia8(const Char_t* name, const Char_t* title) : Ge
   mInterfaceName = "pythia8";
 }
 
+bool GeneratorPythia8::setInitialSeed(long seed)
+{
+  // check first of all if Init not yet called and seed not <0
+  if (mIsInitialized) {
+    return false;
+  }
+  if (seed < 0) {
+    return false;
+  }
+  // sets the initial seed and applies the correct Pythia
+  // range
+  mInitialRNGSeed = seed % (MAX_SEED + 1);
+  LOG(info) << "GeneratorPythia8: Setting initial seed to " << mInitialRNGSeed;
+  return true;
+}
+
+/*****************************************************************/
+void GeneratorPythia8::seedGenerator()
+{
+  /// Function is seeding the Pythia random numbers.
+  /// In case a completely different logic is required by users,
+  /// we could make this function virtual or allow to set/execute
+  /// a user-given lambda function instead.
+
+  /// Note that this function is executed **before** the Pythia8
+  /// user config file is read. So the config file should either not contain seeding information ... or can be used to override seeding logic.
+
+  auto seed = mInitialRNGSeed;
+  if (seed == -1) {
+    // Will use the mInitialRNGSeed if it was set.
+    // Otherwise will seed the generator with the state of
+    // TRandom::GetSeed. This is the seed that is influenced from
+    // SimConfig --seed command line options options.
+    seed = (gRandom->TRandom::GetSeed() % (MAX_SEED + 1));
+    LOG(info) << "GeneratorPythia8: Using random seed from gRandom % 900000001: " << seed;
+  }
+  mPythia.readString("Random:setSeed on");
+  mPythia.readString("Random:seed " + std::to_string(seed));
+}
+
 /*****************************************************************/
 
 Bool_t GeneratorPythia8::Init()
@@ -71,6 +119,12 @@ Bool_t GeneratorPythia8::Init()
 
   /** init base class **/
   Generator::Init();
+
+  /** Seed the Pythia random number state.
+      The user may override this seeding by providing separate
+      Random:setSeed configurations in the configuration file.
+  **/
+  seedGenerator();
 
   /** read configuration **/
   if (!mConfig.empty()) {
@@ -137,8 +191,22 @@ Bool_t GeneratorPythia8::Init()
     return false;
   }
 
+  initUserFilterCallback();
+
+  mIsInitialized = true;
+
   /** success **/
   return true;
+}
+
+/*****************************************************************/
+void GeneratorPythia8::setUserHooks(Pythia8::UserHooks* hooks)
+{
+#if PYTHIA_VERSION_INTEGER < 8300
+  mPythia.setUserHooksPtr(hooks);
+#else
+  mPythia.setUserHooksPtr(std::shared_ptr<Pythia8::UserHooks>(hooks));
+#endif
 }
 
 /*****************************************************************/
@@ -185,177 +253,399 @@ Bool_t
 }
 
 /*****************************************************************/
+void GeneratorPythia8::investigateRelatives(Pythia8::Event& event,
+                                            const std::vector<int>& old2New,
+                                            size_t index,
+                                            std::vector<bool>& done,
+                                            GetRelatives getter,
+                                            SetRelatives setter,
+                                            FirstLastRelative firstLast,
+                                            const std::string& what,
+                                            const std::string& ind)
+{
+  // Utility to find new index, or -1 if not found
+  auto findNew = [old2New](size_t old) -> int {
+    return old2New[old];
+  };
+  int newIdx = findNew(index);
+  int hepmc = event[index].statusHepMC();
+
+  LOG(debug) << ind
+             << index << " -> "
+             << newIdx << " (" << hepmc << ") ";
+  if (done[index]) {
+    LOG(debug) << ind << " already done";
+    return;
+  }
+
+  // Our list of new relatives
+  using IdList = std::pair<int, int>;
+  constexpr int invalid = 0xFFFFFFF;
+  IdList newRelatives = std::make_pair(invalid, -invalid);
+
+  // Utility to add id
+  auto addId = [](IdList& l, size_t id) {
+    l.first = std::min(int(id), l.first);
+    l.second = std::max(int(id), l.second);
+  };
+
+  // Get particle and relatives
+  auto& particle = event[index];
+  auto relatives = getter(particle);
+
+  LOG(debug) << ind << " Check " << what << "s ["
+             << std::setw(3) << firstLast(particle).first << ","
+             << std::setw(3) << firstLast(particle).second << "] "
+             << relatives.size();
+
+  for (auto relativeIdx : relatives) {
+    int newRelative = findNew(relativeIdx);
+    if (newRelative >= 0) {
+      // If this relative is to be kept, then append to list of new
+      // relatives.
+      LOG(debug) << ind << " "
+                 << what << " "
+                 << relativeIdx << " -> "
+                 << newRelative << " to be kept" << std::endl;
+      addId(newRelatives, newRelative);
+      continue;
+    }
+    LOG(debug) << ind << " "
+               << what << " "
+               << relativeIdx << " not to be kept "
+               << (done[relativeIdx] ? "already done" : "to be done")
+               << std::endl;
+
+    // Below is code for when the relative is not to be kept
+    auto& relative = event[relativeIdx];
+    if (not done[relativeIdx]) {
+      // IF the relative hasn't been processed yet, do so now
+      investigateRelatives(event,       // Event
+                           old2New,     // Map from old to new
+                           relativeIdx, // current particle index
+                           done,        // cache flag
+                           getter,      // get mother relatives
+                           setter,      // set mother relatives
+                           firstLast,   // get first and last
+                           what,        // what we're looking at
+                           ind + "  "); // Logging indent
+    }
+
+    // If this relative was already done, then get its relatives and
+    // add them to the list of new relatives.
+    auto grandRelatives = firstLast(relative);
+    int grandRelative1 = grandRelatives.first;
+    int grandRelative2 = grandRelatives.second;
+    assert(grandRelative1 != invalid);
+    assert(grandRelative2 != -invalid);
+    if (grandRelative1 > 0) {
+      addId(newRelatives, grandRelative1);
+    }
+    if (grandRelative2 > 0) {
+      addId(newRelatives, grandRelative2);
+    }
+    LOG(debug) << ind << " "
+               << what << " "
+               << relativeIdx << " gave new relatives "
+               << grandRelative1 << " -> " << grandRelative2;
+  }
+  LOG(debug) << ind << " Got "
+             << (newRelatives.second - newRelatives.first + 1) << " new "
+             << what << "s ";
+
+  if (newRelatives.first != invalid) {
+    // If the first relative is not invalid, then the second isn't
+    // either (possibly the same though).
+    int newRelative1 = newRelatives.first;
+    int newRelative2 = newRelatives.second;
+    setter(particle, newRelative1, newRelative2);
+    LOG(debug) << ind << " " << what << "s: "
+               << firstLast(particle).first << " ("
+               << newRelative1 << "),"
+               << firstLast(particle).second << " ("
+               << newRelative2 << ")";
+
+  } else {
+    setter(particle, 0, 0);
+  }
+  done[index] = true;
+}
+
+/*****************************************************************/
+void GeneratorPythia8::pruneEvent(Pythia8::Event& event, Select select)
+{
+  // Mapping from old to new index.
+  std::vector<int> old2new(event.size(), -1);
+
+  // Particle 0 is a system particle, and we will skip that in the
+  // following.
+  size_t newId = 0;
+
+  // Loop over particles and store those we need
+  for (size_t i = 1; i < event.size(); i++) {
+    auto& particle = event[i];
+    if (select(particle)) {
+      ++newId;
+      old2new[i] = newId;
+    }
+  }
+  // Utility to find new index, or -1 if not found
+  auto findNew = [old2new](size_t old) -> int {
+    return old2new[old];
+  };
+
+  // First loop, investigate mothers - from the bottom
+  auto getMothers = [](const Pythia8::Particle& particle) { return particle.motherList(); };
+  auto setMothers = [](Pythia8::Particle& particle, int m1, int m2) { particle.mothers(m1, m2); };
+  auto firstLastMothers = [](const Pythia8::Particle& particle) { return std::make_pair(particle.mother1(), particle.mother2()); };
+
+  std::vector<bool> motherDone(event.size(), false);
+  for (size_t i = 1; i < event.size(); ++i) {
+    investigateRelatives(event,            // Event
+                         old2new,          // Map from old to new
+                         i,                // current particle index
+                         motherDone,       // cache flag
+                         getMothers,       // get mother relatives
+                         setMothers,       // set mother relatives
+                         firstLastMothers, // get first and last
+                         "mother");        // what we're looking at
+  }
+
+  // Second loop, investigate daughters - from the top
+  auto getDaughters = [](const Pythia8::Particle& particle) {
+    // In case of |status|==13 (diffractive), we cannot use
+    // Pythia8::Particle::daughterList as it will give more than
+    // just the immediate daughters. In that cae, we do it
+    // ourselves.
+    if (std::abs(particle.status()) == 13) {
+      int d1 = particle.daughter1();
+      int d2 = particle.daughter2();
+      if (d1 == 0 and d2 == 0) {
+        return std::vector<int>();
+      }
+      if (d2 == 0) {
+        return std::vector<int>{d1};
+      }
+      if (d2 > d1) {
+        std::vector<int> ret(d2-d1+1);
+        std::iota(ret.begin(), ret.end(), d1);
+        return ret;
+      }
+      return std::vector<int>{d2,d1};
+    }
+    return particle.daughterList(); };
+  auto setDaughters = [](Pythia8::Particle& particle, int d1, int d2) { particle.daughters(d1, d2); };
+  auto firstLastDaughters = [](const Pythia8::Particle& particle) { return std::make_pair(particle.daughter1(), particle.daughter2()); };
+
+  std::vector<bool> daughterDone(event.size(), false);
+  for (size_t i = event.size() - 1; i > 0; --i) {
+    investigateRelatives(event,              // Event
+                         old2new,            // Map from old to new
+                         i,                  // current particle index
+                         daughterDone,       // cache flag
+                         getDaughters,       // get mother relatives
+                         setDaughters,       // set mother relatives
+                         firstLastDaughters, // get first and last
+                         "daughter");        // what we're looking at
+  }
+
+  // Make a pruned event
+  Pythia8::Event pruned;
+  pruned.init("Pruned event", &mPythia.particleData);
+  pruned.reset();
+
+  for (size_t i = 1; i < event.size(); i++) {
+    int newIdx = findNew(i);
+    if (newIdx < 0) {
+      continue;
+    }
+
+    auto particle = event[i];
+    int realIdx = pruned.append(particle);
+    assert(realIdx == newIdx);
+  }
+
+  // We may have that two or more mothers share some daughters, but
+  // that one or more mothers have more daughters than the other
+  // mothers, and hence not all daughters point back to all mothers.
+  // This can happen, for example, if a beam particle radiates
+  // on-shell particles before an interaction with any daughters
+  // from the other mothers.  Thus, we need to take care of that or
+  // the event record will be corrupted.
+  //
+  // What we do is that for all particles, we look up the daughters.
+  // Then for each daughter, we check the mothers of those
+  // daughters.  If this list of mothers include other mothers than
+  // the currently investigated mother, we must change the mothers
+  // of the currently investigated daughters.
+  using IdList = std::pair<int, int>;
+  // Utility to add id
+  auto addId = [](IdList& l, size_t id) {
+    l.first = std::min(int(id), l.first);
+    l.second = std::max(int(id), l.second);
+  };
+  constexpr int invalid = 0xFFFFFFF;
+
+  std::vector<bool> shareDone(pruned.size(), false);
+  for (size_t i = 1; i < pruned.size(); i++) {
+    if (shareDone[i]) {
+      continue;
+    }
+
+    auto& particle = pruned[i];
+    auto daughters = particle.daughterList();
+    IdList allDaughters = std::make_pair(invalid, -invalid);
+    IdList allMothers = std::make_pair(invalid, -invalid);
+    addId(allMothers, i);
+    for (auto daughterIdx : daughters) {
+      // Add this daughter to set of all daughters
+      addId(allDaughters, daughterIdx);
+      auto& daughter = pruned[daughterIdx];
+      auto otherMothers = daughter.motherList();
+      for (auto otherMotherIdx : otherMothers) {
+        // Add this mother to set of all mothers.  That is, take all
+        // mothers of the current daughter of the current particle
+        // and store that.  In this way, we register mothers that
+        // share a daughter with the current particle.
+        addId(allMothers, otherMotherIdx);
+        // We also need to take all the daughters of this shared
+        // mother and reister those.
+        auto& otherMother = pruned[otherMotherIdx];
+        int otherDaughter1 = otherMother.daughter1();
+        int otherDaughter2 = otherMother.daughter2();
+        if (otherDaughter1 > 0) {
+          addId(allDaughters, otherDaughter1);
+        }
+        if (otherDaughter2 > 0) {
+          addId(allDaughters, otherDaughter2);
+        }
+      }
+      // At this point, we have added all mothers of current
+      // daughter, and all daughters of those mothers.
+    }
+    // At this point, we have all mothers that share daughters with
+    // the current particle, and we have all of the daughters
+    // too.
+    //
+    // We can now update the daughter information on all mothers
+    int minDaughter = allDaughters.first;
+    int maxDaughter = allDaughters.second;
+    int minMother = allMothers.first;
+    int maxMother = allMothers.second;
+    if (minMother != invalid) {
+      // If first mother isn't invalid, then second isn't either
+      for (size_t motherIdx = minMother; motherIdx <= maxMother; //
+           motherIdx++) {
+        shareDone[motherIdx] = true;
+        if (minDaughter == invalid) {
+          pruned[motherIdx].daughters(0, 0);
+        } else {
+          pruned[motherIdx].daughters(minDaughter, maxDaughter);
+        }
+      }
+    }
+    if (minDaughter != invalid) {
+      // If least mother isn't invalid, then largest mother will not
+      // be invalid either.
+      for (size_t daughterIdx = minDaughter; daughterIdx <= maxDaughter; //
+           daughterIdx++) {
+        if (minMother == invalid) {
+          pruned[daughterIdx].mothers(0, 0);
+        } else {
+          pruned[daughterIdx].mothers(minMother, maxMother);
+        }
+      }
+    }
+  }
+  if (GeneratorPythia8Param::Instance().verbose) {
+    LOG(info) << "Pythia event was pruned from " << event.size()
+              << " to " << pruned.size() << " particles";
+  }
+  // Assign our pruned event to the event passed in
+  event = pruned;
+}
+
+/*****************************************************************/
+void GeneratorPythia8::initUserFilterCallback()
+{
+  mUserFilterFcn = [](Pythia8::Particle const&) -> bool { return true; };
+
+  auto& filter = GeneratorPythia8Param::Instance().particleFilter;
+  if (filter.size() > 0) {
+    LOG(info) << "Initializing the callback for user-based particle pruning " << filter;
+    auto expandedFileName = o2::utils::expandShellVarsInFileName(filter);
+    if (std::filesystem::exists(expandedFileName)) {
+      // if the filter is in a file we will compile the hook on the fly
+      mUserFilterFcn = o2::conf::GetFromMacro<UserFilterFcn>(expandedFileName, "filterPythia()", "o2::eventgen::GeneratorPythia8::UserFilterFcn", "o2mc_pythia8_userfilter_hook");
+      LOG(info) << "Hook initialized from file " << expandedFileName;
+    } else {
+      // if it's not a file we interpret it as a C++ lambda string and JIT it directly;
+      LOG(error) << "Did not find a file " << expandedFileName << " ; Will not execute hook";
+    }
+    mApplyPruning = true;
+  }
+}
+
+/*****************************************************************/
 
 Bool_t
-  GeneratorPythia8::importParticles(Pythia8::Event const& event)
+  GeneratorPythia8::importParticles(Pythia8::Event& event)
 {
   /** import particles **/
 
-  // the right moment to filter out unwanted stuff (like parton-level event information)
+  // The right moment to filter out unwanted stuff (like parton-level
+  // event information) Here, we aim to filter out everything before
+  // hadronization with the motivation to reduce the size of the MC
+  // event record in the AOD.
 
-  std::unique_ptr<Pythia8::Event> hadronLevelEvent;
-  auto eventToRead = &event;
+  std::function<bool(const Pythia8::Particle&)> partonSelect = [](const Pythia8::Particle&) { return true; };
+  if (not GeneratorPythia8Param::Instance().includePartonEvent) {
 
-  // The right moment to filter out unwanted stuff (like parton-level event information)
-  // Here, we aim to filter out everything before hadronization with the motivation to reduce the
-  // size of the MC event record in the AOD.
-  if (!GeneratorPythia8Param::Instance().includePartonEvent) {
-
-    // lambda performing the actual filtering
-    auto getHadronLevelEvent = [](Pythia8::Event const& event, Pythia8::Event& hadronLevelEvent) {
-      std::unordered_map<int, int> old_to_new;
-      std::vector<Pythia8::Particle> filtered;
-      // push the system particle
-      filtered.push_back(event[0]);
-
-      // Iterate over all particles and keep those that appear in hadronization phase
-      // (should be mostly those with HepMC statuses 1 and 2)
-      // we go from 1 since 0 is system as whole
-      for (int i = 1; i < event.size(); ++i) {
-        auto& p = event[i];
-        if (p.statusHepMC() == 1 || p.statusHepMC() == 2) {
-          filtered.push_back(p);
-          old_to_new[i] = filtered.size() - 1;
-        }
+    // Select pythia particles
+    partonSelect = [](const Pythia8::Particle& particle) {
+      switch (particle.statusHepMC()) {
+        case 1: // Final st
+        case 2: // Decayed
+        case 4: // Beam
+          return true;
       }
-
-      // helper lambda to lookup new index in filtered event - returns new id or -1 if not succesfull
-      auto lookupNew = [&old_to_new](int oldid) {
-        auto iter = old_to_new.find(oldid);
-        if (iter == old_to_new.end()) {
-          return -1;
-        }
-        return iter->second;
-      };
-
-      std::vector<int> childbuffer;
-
-      // a lambda to check/assert size on children
-      auto checkChildrenSize = [&childbuffer](int expected) {
-        if (expected != childbuffer.size()) {
-          LOG(error) << "Transcribed children list does not have expected size " << expected << " but " << childbuffer.size();
-        }
-      };
-
-      // second pass to fix parent / children mappings
-      for (int i = 1; i < filtered.size(); ++i) {
-        auto& p = filtered[i];
-        // get old daughters --> lookup their new position and fix
-        auto originaldaughterids = p.daughterList();
-
-        // this checks if all children have been copied over to filtered
-        childbuffer.clear();
-        for (auto& oldid : originaldaughterids) {
-          auto newid = lookupNew(oldid);
-          if (newid == -1) {
-            LOG(error) << "Pythia8 remapping error - original index not known " << oldid;
-          } else {
-            childbuffer.push_back(newid);
-          }
-        }
-
-        // fix children
-        // analyse the cases (see Pythia8 documentation)
-        auto d1 = p.daughter1();
-        auto d2 = p.daughter2();
-        if (d1 == 0 && d2 == 0) {
-          // there is no offsprint --> nothing to do
-          checkChildrenSize(0);
-        } else if (d1 == d2 && d1 != 0) {
-          // carbon copy ... should not happend here
-          checkChildrenSize(1);
-          p.daughters(childbuffer[0], childbuffer[0]);
-        } else if (d1 > 0 && d2 == 0) {
-          checkChildrenSize(1);
-          p.daughters(childbuffer[0], 0);
-        } else if (d2 != 0 && d2 > d1) {
-          // multiple decay products ... adjacent in the event
-          checkChildrenSize(d2 - d1 + 1);
-          p.daughters(lookupNew(d1), lookupNew(d2));
-        } else if (d2 != 0 && d2 < d1) {
-          // 2 distinct products ... not adjacent to each other
-          checkChildrenSize(2);
-          p.daughters(lookupNew(d1), lookupNew(d2));
-        }
-
-        // fix mothers
-        auto m1 = p.mother1();
-        auto m2 = p.mother2();
-        if (m1 == 0 && m2 == 0) {
-          // nothing to be done
-        } else if (m1 > 0 && m2 == m1) {
-          // carbon copy
-          auto tmp = lookupNew(m1);
-          if (tmp != -1) {
-            p.mothers(tmp, tmp);
-          } else {
-            // delete mother link since no longer available
-            p.mothers(0, 0);
-          }
-        } else if (m1 > 0 && m2 == 0) {
-          // the "normal" mother case, where it is meaningful to speak of one single mother to several products, in a shower or decay;
-          auto tmp = lookupNew(m1);
-          if (tmp != -1) {
-            p.mothers(tmp, tmp);
-          } else {
-            // delete mother link since no longer available
-            p.mothers(0, 0);
-          }
-        } else if (m1 < m2 && m1 > 0) {
-          // mother1 < mother2, both > 0,
-          // case for abs(status) = 81 - 86: primary hadrons produced from
-          // the fragmentation of a string spanning the range from mother1 to mother2,
-          // so that all partons in this range should be considered mothers;
-          // and analogously for abs(status) = 101 - 106, the formation of R-hadrons;
-
-          // here we simply delete the mothers
-          p.mothers(0, 0);
-          // verify that these shouldn't be in the list anyway
-          if (lookupNew(m1) != -1 || lookupNew(m2) != -1) {
-            LOG(warn) << "Indexing looks weird for primary hadron cases";
-          }
-        } else {
-          LOG(warn) << "Unsupported / unexpected mother reindexing. Code needs more treatment";
-        }
-        // append this to the Pythia event
-        hadronLevelEvent.append(p);
-      }
+      // For example to keep diffractive particles
+      // if (particle.id() == 9902210) return true;
+      return false;
     };
+    mApplyPruning = true;
+  }
 
-    hadronLevelEvent.reset(new Pythia8::Event);
-    hadronLevelEvent->init("Hadron Level event record", &mPythia.particleData);
-
-    hadronLevelEvent->reset();
-
-    getHadronLevelEvent(event, *hadronLevelEvent);
-
-    hadronLevelEvent->list();
-    eventToRead = hadronLevelEvent.get();
-    LOG(info) << "The pythia event has been reduced from size " << event.size()
-              << " to " << hadronLevelEvent->size() << " by pre-hadronization pruning";
+  if (mApplyPruning) {
+    auto finalSelect = [partonSelect, this](const Pythia8::Particle& p) { return partonSelect(p) && mUserFilterFcn(p); };
+    pruneEvent(event, finalSelect);
   }
 
   /* loop over particles */
-  //  auto weight = mPythia.info.weight(); // TBD: use weights
-  auto nParticles = eventToRead->size();
-  for (Int_t iparticle = 1; iparticle < nParticles; iparticle++) { // first particle is system
-    auto particle = (*eventToRead)[iparticle];
+  auto nParticles = event.size();
+  for (Int_t iparticle = 1; iparticle < nParticles; iparticle++) {
+    // first particle is system
+    auto particle = event[iparticle];
     auto pdg = particle.id();
-    auto st = o2::mcgenstatus::MCGenStatusEncoding(particle.statusHepMC(), particle.status()).fullEncoding;
-    auto px = particle.px();
-    auto py = particle.py();
-    auto pz = particle.pz();
-    auto et = particle.e();
-    auto vx = particle.xProd();
-    auto vy = particle.yProd();
-    auto vz = particle.zProd();
-    auto vt = particle.tProd();
-    auto m1 = particle.mother1() - 1;
-    auto m2 = particle.mother2() - 1;
-    auto d1 = particle.daughter1() - 1;
-    auto d2 = particle.daughter2() - 1;
-    mParticles.push_back(TParticle(pdg, st, m1, m2, d1, d2, px, py, pz, et, vx, vy, vz, vt));
-    mParticles.back().SetBit(ParticleStatus::kToBeDone, particle.statusHepMC() == 1);
+    auto st = o2::mcgenstatus::MCGenStatusEncoding(particle.statusHepMC(), //
+                                                   particle.status())      //
+                .fullEncoding;
+    mParticles.push_back(TParticle(particle.id(),            // Particle type
+                                   st,                       // status
+                                   particle.mother1() - 1,   // first mother
+                                   particle.mother2() - 1,   // second mother
+                                   particle.daughter1() - 1, // first daughter
+                                   particle.daughter2() - 1, // second daughter
+                                   particle.px(),            // X-momentum
+                                   particle.py(),            // Y-momentum
+                                   particle.pz(),            // Z-momentum
+                                   particle.e(),             // Energy
+                                   particle.xProd(),         // Production X
+                                   particle.yProd(),         // Production Y
+                                   particle.zProd(),         // Production Z
+                                   particle.tProd()));       // Production t
+    mParticles.back().SetBit(ParticleStatus::kToBeDone,      //
+                             particle.statusHepMC() == 1);
   }
 
   /** success **/
@@ -390,6 +680,10 @@ void GeneratorPythia8::updateHeader(o2::dataformats::MCEventHeader* eventHeader)
   eventHeader->putInfo<float>(Key::xSection, info.sigmaGen() * 1e9);
   eventHeader->putInfo<float>(Key::xSectionError, info.sigmaErr() * 1e9);
 
+  // Set event scale and nMPI
+  eventHeader->putInfo<float>(Key::eventScale, info.QRen());
+  eventHeader->putInfo<int>(Key::mpi, info.nMPI());
+
   // Set weights (overrides cross-section for each weight)
   size_t iw = 0;
   auto xsecErr = info.weightContainerPtr->getTotalXsecErr();
@@ -411,6 +705,10 @@ void GeneratorPythia8::updateHeader(o2::dataformats::MCEventHeader* eventHeader)
     /** set impact parameter **/
     eventHeader->SetB(hiinfo->b());
     eventHeader->putInfo<double>(Key::impactParameter, hiinfo->b());
+    /** set event plane angle **/
+#if PYTHIA_VERSION_INTEGER >= 8310
+    eventHeader->putInfo<double>(Key::planeAngle, hiinfo->phi());
+#endif
     auto bImp = hiinfo->b();
     /** set Ncoll, Npart and Nremn **/
     int nColl, nPart;
@@ -506,14 +804,21 @@ void GeneratorPythia8::getNcoll(const Pythia8::Info& info, int& nColl)
 #else
   auto hiinfo = info.hiInfo;
 #endif
+  nColl = 0;
+  if (!hiinfo) {
+    LOG(warn) << "No heavy-ion information from Pythia";
+    return;
+  }
 
   // This is how the Pythia authors define Ncoll
   nColl = (hiinfo->nAbsProj() + hiinfo->nDiffProj() +
            hiinfo->nAbsTarg() + hiinfo->nDiffTarg() -
            hiinfo->nCollND() - hiinfo->nCollDD());
-  nColl = 0;
 
-  if (!hiinfo) {
+  if (not hiinfo->subCollisionsPtr()) {
+#if PYTHIA_VERSION_INTEGER < 8310
+    LOG(fatal) << "No sub-collision pointer from Pythia";
+#endif
     return;
   }
 
@@ -539,15 +844,21 @@ void GeneratorPythia8::getNpart(const Pythia8::Info& info, int& nPart)
 
   /** compute number of participants as the sum of all participants nucleons **/
 
-  // This is how the Pythia authors calculate Npart
 #if PYTHIA_VERSION_INTEGER < 8300
   auto hiinfo = info.hiinfo;
 #else
   auto hiinfo = info.hiInfo;
 #endif
-  if (hiinfo) {
-    nPart = (hiinfo->nAbsProj() + hiinfo->nDiffProj() +
-             hiinfo->nAbsTarg() + hiinfo->nDiffTarg());
+  nPart = 0;
+  if (not hiinfo) {
+    return;
+  }
+
+  // This is how the Pythia authors calculate Npart
+  nPart = (hiinfo->nAbsProj() + hiinfo->nDiffProj() +
+           hiinfo->nAbsTarg() + hiinfo->nDiffTarg());
+  if (not hiinfo->subCollisionsPtr()) {
+    return;
   }
 
   int nProtonProj, nNeutronProj, nProtonTarg, nNeutronTarg;
@@ -570,6 +881,15 @@ void GeneratorPythia8::getNpart(const Pythia8::Info& info, int& nProtonProj, int
 
   nProtonProj = nNeutronProj = nProtonTarg = nNeutronTarg = 0;
   if (!hiinfo) {
+    return;
+  }
+
+  nProtonProj = hiinfo->nAbsProj() + hiinfo->nDiffProj();
+  nProtonTarg = hiinfo->nAbsTarg() + hiinfo->nDiffTarg();
+  if (not hiinfo->subCollisionsPtr()) {
+#if PYTHIA_VERSION_INTEGER < 8310
+    LOG(fatal) << "No sub-collision pointer from Pythia";
+#endif
     return;
   }
 

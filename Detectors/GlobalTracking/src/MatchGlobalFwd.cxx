@@ -10,6 +10,7 @@
 // or submit itself to any jurisdiction.
 
 #include "GlobalTracking/MatchGlobalFwd.h"
+#include <queue>
 
 using namespace o2::globaltracking;
 
@@ -66,6 +67,8 @@ void MatchGlobalFwd::init()
 
   mSaveMode = matchingParam.saveMode;
   LOG(info) << "Save mode MFTMCH candidates = " << mSaveMode;
+
+  mNCandidates = matchingParam.nCandidates;
 }
 
 //_________________________________________________________
@@ -97,6 +100,9 @@ void MatchGlobalFwd::run(const o2::globaltracking::RecoContainer& inp)
             break;
           case kSaveTrainingData:
             doMatching<kSaveTrainingData>();
+            break;
+          case kSaveNCandidates:
+            doMatching<kSaveNCandidates>();
             break;
           default:
             LOG(fatal) << "Invalid MFTMCH save mode";
@@ -132,6 +138,7 @@ void MatchGlobalFwd::clear()
   mMatchLabels.clear();
   mMFTTrackROFContMapping.clear();
   mMatchingInfo.clear();
+  mCandidates.clear();
 }
 
 //_________________________________________________________
@@ -400,6 +407,25 @@ void MatchGlobalFwd::doMatching()
     if (mMCTruthON) {
       LOG(info) << "  MFT-MCH Matching: nFakes = " << nFakes << " nTrue = " << nTrue;
     }
+  } else if constexpr (saveAllMode == SaveMode::kSaveNCandidates) {
+    int nFakes = 0, nTrue = 0;
+    auto& matchAllChi2 = mMatchingFunctionMap["matchALL"];
+    for (auto MCHId = 0; MCHId < mMCHWork.size(); MCHId++) {
+      auto& thisMCHTrack = mMCHWork[MCHId];
+      for (auto& pairCandidate : mCandidates[MCHId]) {
+        thisMCHTrack.setMFTTrackID(pairCandidate.second);
+        auto& thisMFTTrack = mMFTWork[pairCandidate.second];
+        auto chi2 = matchAllChi2(thisMCHTrack, thisMFTTrack); // Matching chi2 is stored independently
+        thisMCHTrack.setMFTMCHMatchingScore(pairCandidate.first);
+        thisMCHTrack.setMFTMCHMatchingChi2(chi2);
+        mMatchedTracks.emplace_back(thisMCHTrack);
+        mMatchingInfo.emplace_back(thisMCHTrack);
+        if (mMCTruthON) {
+          mMatchLabels.push_back(computeLabel(MCHId, pairCandidate.second));
+          mMatchLabels.back().isFake() ? nFakes++ : nTrue++;
+        }
+      }
+    }
   }
 }
 
@@ -412,6 +438,10 @@ void MatchGlobalFwd::ROFMatch(int MFTROFId, int firstMCHROFId, int lastMCHROFId)
   const auto& firstMCHROF = mMCHTrackROFRec[firstMCHROFId];
   const auto& lastMCHROF = mMCHTrackROFRec[lastMCHROFId];
   int nFakes = 0, nTrue = 0;
+
+  auto compare = [](const std::pair<int, int>& a, const std::pair<int, int>& b) {
+    return a.first < b.first;
+  };
 
   auto firstMFTTrackID = thisMFTROF.getFirstEntry();
   auto lastMFTTrackID = firstMFTTrackID + thisMFTROF.getNEntries() - 1;
@@ -464,12 +494,21 @@ void MatchGlobalFwd::ROFMatch(int MFTROFId, int firstMCHROFId, int lastMCHROFId)
           }
         }
 
+        if constexpr (saveAllMode == SaveMode::kSaveNCandidates) { // Save best N matching candidates
+          auto score = mMatchFunc(thisMCHTrack, thisMFTTrack);
+          std::pair<float, int> scoreID = {score, MFTId};
+          mCandidates[MCHId].push_back(scoreID);
+          std::sort(mCandidates[MCHId].begin(), mCandidates[MCHId].end(), compare);
+          if (mCandidates[MCHId].size() > mNCandidates) {
+            mCandidates[MCHId].pop_back();
+          }
+        }
+
         if constexpr (saveAllMode == SaveMode::kSaveTrainingData) { // In save training data mode store track parameters at matching plane
           thisMCHTrack.setMFTTrackID(MFTId);
           mMatchingInfo.emplace_back(thisMCHTrack);
           mMCHMatchPlaneParams.emplace_back(thisMCHTrack);
           mMFTMatchPlaneParams.emplace_back(static_cast<o2::mft::TrackMFT>(thisMFTTrack));
-
           if (mMCTruthON) {
             mMatchLabels.push_back(matchLabel);
             mMatchLabels.back().isFake() ? nFakes++ : nTrue++;
@@ -768,6 +807,76 @@ o2::dataformats::GlobalFwdTrack MatchGlobalFwd::MCHtoFwd(const o2::mch::TrackPar
   convertedTrack.setCovariances(covariances);
 
   return convertedTrack;
+}
+
+//_________________________________________________________________________________________________
+o2::mch::TrackParam MatchGlobalFwd::FwdtoMCH(const o2::dataformats::GlobalFwdTrack& fwdtrack)
+{
+  // Convert Forward Track parameters and covariances matrix to the
+  // MCH track format.
+
+  // Parameter conversion
+  double alpha1, alpha3, alpha4, x2, x3, x4;
+
+  x2 = fwdtrack.getPhi();
+  x3 = fwdtrack.getTanl();
+  x4 = fwdtrack.getInvQPt();
+
+  auto sinx2 = TMath::Sin(x2);
+  auto cosx2 = TMath::Cos(x2);
+
+  alpha1 = cosx2 / x3;
+  alpha3 = sinx2 / x3;
+  alpha4 = x4 / TMath::Sqrt(x3 * x3 + sinx2 * sinx2);
+
+  auto K = TMath::Sqrt(x3 * x3 + sinx2 * sinx2);
+  auto K3 = K * K * K;
+
+  // Covariances matrix conversion
+  SMatrix55Std jacobian;
+  SMatrix55Sym covariances;
+
+  covariances(0, 0) = fwdtrack.getCovariances()(0, 0);
+  covariances(0, 1) = fwdtrack.getCovariances()(0, 1);
+  covariances(0, 2) = fwdtrack.getCovariances()(0, 2);
+  covariances(0, 3) = fwdtrack.getCovariances()(0, 3);
+  covariances(0, 4) = fwdtrack.getCovariances()(0, 4);
+
+  covariances(1, 1) = fwdtrack.getCovariances()(1, 1);
+  covariances(1, 2) = fwdtrack.getCovariances()(1, 2);
+  covariances(1, 3) = fwdtrack.getCovariances()(1, 3);
+  covariances(1, 4) = fwdtrack.getCovariances()(1, 4);
+
+  covariances(2, 2) = fwdtrack.getCovariances()(2, 2);
+  covariances(2, 3) = fwdtrack.getCovariances()(2, 3);
+  covariances(2, 4) = fwdtrack.getCovariances()(2, 4);
+
+  covariances(3, 3) = fwdtrack.getCovariances()(3, 3);
+  covariances(3, 4) = fwdtrack.getCovariances()(3, 4);
+
+  covariances(4, 4) = fwdtrack.getCovariances()(4, 4);
+
+  jacobian(0, 0) = 1;
+
+  jacobian(1, 2) = -sinx2 / x3;
+  jacobian(1, 3) = -cosx2 / (x3 * x3);
+
+  jacobian(2, 1) = 1;
+
+  jacobian(3, 2) = cosx2 / x3;
+  jacobian(3, 3) = -sinx2 / (x3 * x3);
+
+  jacobian(4, 2) = -x4 * sinx2 * cosx2 / K3;
+  jacobian(4, 3) = -x3 * x4 / K3;
+  jacobian(4, 4) = 1 / K;
+  // jacobian*covariances*jacobian^T
+  covariances = ROOT::Math::Similarity(jacobian, covariances);
+
+  double cov[] = {covariances(0, 0), covariances(1, 0), covariances(1, 1), covariances(2, 0), covariances(2, 1), covariances(2, 2), covariances(3, 0), covariances(3, 1), covariances(3, 2), covariances(3, 3), covariances(4, 0), covariances(4, 1), covariances(4, 2), covariances(4, 3), covariances(4, 4)};
+  double param[] = {fwdtrack.getX(), alpha1, fwdtrack.getY(), alpha3, alpha4};
+
+  o2::mch::TrackParam convertedTrack(fwdtrack.getZ(), param, cov);
+  return o2::mch::TrackParam(convertedTrack);
 }
 
 //_________________________________________________________________________________________________

@@ -143,6 +143,11 @@ class MatchGlobalFwd
   const std::vector<o2::dataformats::MatchInfoFwd>& getMFTMCHMatchInfo() const { return mMatchingInfo; }
   const std::vector<o2::MCCompLabel>& getMatchLabels() const { return mMatchLabels; }
 
+  /// Converts mchTrack parameters to Forward coordinate system
+  o2::dataformats::GlobalFwdTrack MCHtoFwd(const o2::mch::TrackParam& mchTrack);
+  /// Converts FwdTrack parameters to MCH coordinate system
+  o2::mch::TrackParam FwdtoMCH(const o2::dataformats::GlobalFwdTrack& fwdtrack);
+
  private:
   void updateTimeDependentParams();
   void fillBuiltinFunctions();
@@ -280,9 +285,6 @@ class MatchGlobalFwd
     return true;
   }
 
-  /// Converts mchTrack parameters to Forward coordinate system
-  o2::dataformats::GlobalFwdTrack MCHtoFwd(const o2::mch::TrackParam& mchTrack);
-
   float mBz = -5.f;                       ///< nominal Bz in kGauss
   float mMatchingPlaneZ = sLastMFTPlaneZ; ///< MCH-MFT matching plane Z position
   Float_t mMFTDiskThicknessInX0 = 0.042 / 5; ///< MFT disk thickness in radiation length
@@ -331,11 +333,14 @@ class MatchGlobalFwd
   std::vector<o2::mft::TrackMFT> mMFTMatchPlaneParams;         ///< MFT track parameters at matching plane
   std::vector<o2::track::TrackParCovFwd> mMCHMatchPlaneParams; ///< MCH track parameters at matching plane
 
+  std::map<int, std::vector<std::pair<float, int>>> mCandidates; ///< map each MCH track id to vector of best match candidates
+
   const o2::itsmft::TopologyDictionary* mMFTDict{nullptr}; // cluster patterns dictionary
   o2::itsmft::ChipMappingMFT mMFTMapping;
   bool mMCTruthON = false;      ///< Flag availability of MC truth
   bool mUseMIDMCHMatch = false; ///< Flag for using MCHMID matches (TrackMCHMID)
-  int mSaveMode = 0;            ///< Output mode [0 = SaveBestMatch; 1 = SaveAllMatches; 2 = SaveTrainingData]
+  int mSaveMode = 0;            ///< Output mode [0 = SaveBestMatch; 1 = SaveAllMatches; 2 = SaveTrainingData; 3 = SaveNCandidates]
+  int mNCandidates = 5;         ///< Numbers of matching candidates to save in savemode=3
   MatchingType mMatchingType = MATCHINGUNDEFINED;
   TGeoManager* mGeoManager;
 };

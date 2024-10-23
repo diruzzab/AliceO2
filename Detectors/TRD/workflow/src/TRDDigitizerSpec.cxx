@@ -32,6 +32,7 @@
 #include "TRDSimulation/Digitizer.h"
 #include "TRDSimulation/Detector.h" // for the Hit type
 #include "TRDSimulation/TRDSimParams.h"
+#include "DetectorsRaw/HBFUtils.h"
 #include <chrono>
 
 using namespace o2::framework;
@@ -92,6 +93,8 @@ class TRDDPLDigitizerTask : public o2::base::BaseDPLDigitizer
     size_t currTrig = 0;                    // from which collision is the current TRD trigger (only needed for debug information)
     bool firstEvent = true;                 // Flag for the first event processed
 
+    auto firstTF = InteractionTimeRecord(o2::raw::HBFUtils::Instance().getFirstSampledTFIR(), 0);
+
     TStopwatch timer;
     timer.Start();
     // loop over all composite collisions given from context
@@ -100,6 +103,16 @@ class TRDDPLDigitizerTask : public o2::base::BaseDPLDigitizer
       LOGF(debug, "Collision %lu out of %lu at %.1f ns started processing. Current pileup container size: %lu. Current number of digits accumulated: %lu",
            collID, irecords.size(), irecords[collID].getTimeNS(), mDigitizer.getPileupSignals().size(), digitsAccum.size());
       currentTime = irecords[collID];
+
+      // Note: Very crude filter to neglect collisions coming before
+      // the first interaction record of the timeframe. Remove this, once these collisions can be handled
+      // within the digitization routine. Collisions before this timeframe might impact digits of this timeframe.
+      // See https://its.cern.ch/jira/browse/O2-5395.
+      if (currentTime < firstTF) {
+        LOG(info) << "Too early: Not digitizing collision " << collID;
+        continue;
+      }
+
       // Trigger logic implemented here
       bool isNewTrigger = true; // flag newly accepted readout trigger
       if (firstEvent) {
@@ -177,17 +190,17 @@ class TRDDPLDigitizerTask : public o2::base::BaseDPLDigitizer
     LOGF(info, "TRD digitization timing: Cpu: %.3e Real: %.3e s", timer.CpuTime(), timer.RealTime());
 
     LOG(info) << "TRD: Sending " << digitsAccum.size() << " digits";
-    pc.outputs().snapshot(Output{"TRD", "DIGITS", 1, Lifetime::Timeframe}, digitsAccum);
+    pc.outputs().snapshot(Output{"TRD", "DIGITS", 1}, digitsAccum);
     if (mctruth) {
       LOG(info) << "TRD: Sending " << labelsAccum.getNElements() << " labels";
       // we are flattening the labels and write to managed shared memory container for further communication
-      auto& sharedlabels = pc.outputs().make<o2::dataformats::ConstMCTruthContainer<o2::MCCompLabel>>(Output{"TRD", "LABELS", 0, Lifetime::Timeframe});
+      auto& sharedlabels = pc.outputs().make<o2::dataformats::ConstMCTruthContainer<o2::MCCompLabel>>(Output{"TRD", "LABELS", 0});
       labelsAccum.flatten_to(sharedlabels);
     }
     LOG(info) << "TRD: Sending ROMode= " << mROMode << " to GRPUpdater";
-    pc.outputs().snapshot(Output{"TRD", "ROMode", 0, Lifetime::Timeframe}, mROMode);
+    pc.outputs().snapshot(Output{"TRD", "ROMode", 0}, mROMode);
     LOG(info) << "TRD: Sending trigger records";
-    pc.outputs().snapshot(Output{"TRD", "TRKTRGRD", 1, Lifetime::Timeframe}, triggers);
+    pc.outputs().snapshot(Output{"TRD", "TRKTRGRD", 1}, triggers);
     // we should be only called once; tell DPL that this process is ready to exit
     pc.services().get<ControlService>().readyToQuit(QuitRequest::Me);
     finished = true;

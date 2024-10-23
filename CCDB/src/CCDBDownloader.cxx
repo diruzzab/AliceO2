@@ -12,6 +12,7 @@
 #include <CCDB/CCDBDownloader.h>
 #include "CommonUtils/StringUtils.h"
 #include "CCDB/CCDBTimeStampUtils.h"
+#include "Framework/Signpost.h"
 
 #include <curl/curl.h>
 #include <unordered_map>
@@ -29,29 +30,38 @@
 #include <fairlogger/Logger.h>
 #include <boost/asio/ip/host_name.hpp>
 
+O2_DECLARE_DYNAMIC_STACKTRACE_LOG(ccdb_downloader);
+
 namespace o2::ccdb
 {
 
-void uvErrorCheck(int code)
+void uvErrorCheck(int code, DownloaderErrorLevel level)
 {
   if (code != 0) {
     char buf[1000];
     uv_strerror_r(code, buf, 1000);
-    LOG(error) << "CCDBDownloader: UV error - " << buf;
+    O2_SIGNPOST_ID_GENERATE(sid, ccdb_downloader);
+    if (level == SEVERE) {
+      O2_SIGNPOST_EVENT_EMIT_ERROR(ccdb_downloader, sid, "CCDBDownloader", "UV error - %{public}s", buf);
+    } else {
+      O2_SIGNPOST_EVENT_EMIT_WARN(ccdb_downloader, sid, "CCDBDownloader", "UV minor error - %{public}s", buf);
+    }
   }
 }
 
 void curlEasyErrorCheck(CURLcode code)
 {
   if (code != CURLE_OK) {
-    LOG(error) << "CCDBDownloader: CURL error - " << curl_easy_strerror(code);
+    O2_SIGNPOST_ID_GENERATE(sid, ccdb_downloader);
+    O2_SIGNPOST_EVENT_EMIT_ERROR(ccdb_downloader, sid, "CCDBDownloader", "CURL error - %{public}s", curl_easy_strerror(code));
   }
 }
 
 void curlMultiErrorCheck(CURLMcode code)
 {
   if (code != CURLM_OK) {
-    LOG(error) << "CCDBDownloader: CURL error - " << curl_multi_strerror(code);
+    O2_SIGNPOST_ID_GENERATE(sid, ccdb_downloader);
+    O2_SIGNPOST_EVENT_EMIT_ERROR(ccdb_downloader, sid, "CCDBDownloader", "CURL error - %{public}s", curl_multi_strerror(code));
   }
 }
 namespace
@@ -80,9 +90,9 @@ CCDBDownloader::CCDBDownloader(uv_loop_t* uv_loop)
   }
 
   // Preparing timer to be used by curl
-  mTimeoutTimer = new uv_timer_t();
+  mTimeoutTimer = (uv_timer_t*)malloc(sizeof(*mTimeoutTimer));
   mTimeoutTimer->data = this;
-  uvErrorCheck(uv_timer_init(mUVLoop, mTimeoutTimer));
+  uvErrorCheck(uv_timer_init(mUVLoop, mTimeoutTimer), SEVERE);
   mHandleMap[(uv_handle_t*)mTimeoutTimer] = true;
 
   initializeMultiHandle();
@@ -91,7 +101,7 @@ CCDBDownloader::CCDBDownloader(uv_loop_t* uv_loop)
 void CCDBDownloader::setupInternalUVLoop()
 {
   mUVLoop = new uv_loop_t();
-  uvErrorCheck(uv_loop_init(mUVLoop));
+  uvErrorCheck(uv_loop_init(mUVLoop), SEVERE);
 }
 
 void CCDBDownloader::initializeMultiHandle()
@@ -114,7 +124,7 @@ CCDBDownloader::~CCDBDownloader()
 
   if (!mExternalLoop) {
     // Schedule all handles to close. Execute loop to allow them to execute their destructors.
-    while (uv_loop_alive(mUVLoop) && uv_loop_close(mUVLoop) == UV_EBUSY) {
+    while (uv_loop_alive(mUVLoop) || (uv_loop_close(mUVLoop) == UV_EBUSY)) {
       uv_walk(mUVLoop, closeHandles, this);
       uv_run(mUVLoop, UV_RUN_ONCE);
     }
@@ -136,7 +146,7 @@ void closeHandles(uv_handle_t* handle, void* arg)
 void onUVClose(uv_handle_t* handle)
 {
   if (handle != nullptr) {
-    delete handle;
+    free(handle);
   }
 }
 
@@ -147,7 +157,7 @@ void CCDBDownloader::closesocketCallback(void* clientp, curl_socket_t item)
     // If external uv loop is used then the keepalive mechanism is active.
     if (CD->mSocketTimerMap.find(item) != CD->mSocketTimerMap.end()) {
       auto timer = CD->mSocketTimerMap[item];
-      uvErrorCheck(uv_timer_stop(timer));
+      uvErrorCheck(uv_timer_stop(timer), SEVERE);
       // we are getting rid of the uv_timer_t pointer ... so we need
       // to free possibly attached user data pointers as well. Counteracts action of opensocketCallback
       if (timer->data) {
@@ -155,12 +165,14 @@ void CCDBDownloader::closesocketCallback(void* clientp, curl_socket_t item)
       }
       CD->mSocketTimerMap.erase(item);
       if (close(item) == -1) {
-        LOG(error) << "CCDBDownloader: Socket failed to close";
+        O2_SIGNPOST_ID_GENERATE(sid, ccdb_downloader);
+        O2_SIGNPOST_EVENT_EMIT_ERROR(ccdb_downloader, sid, "CCDBDownloader", "CCDBDownloader: Socket failed to close");
       }
     }
   } else {
     if (close(item) == -1) {
-      LOG(error) << "CCDBDownloader: Socket failed to close";
+      O2_SIGNPOST_ID_GENERATE(sid, ccdb_downloader);
+      O2_SIGNPOST_EVENT_EMIT_ERROR(ccdb_downloader, sid, "CCDBDownloader", "CCDBDownloader: Socket failed to close");
     }
   }
 }
@@ -170,12 +182,13 @@ curl_socket_t opensocketCallback(void* clientp, curlsocktype purpose, struct cur
   auto CD = (CCDBDownloader*)clientp;
   auto sock = socket(address->family, address->socktype, address->protocol);
   if (sock == -1) {
-    LOG(error) << "CCDBDownloader: Socket failed to open";
+    O2_SIGNPOST_ID_GENERATE(sid, ccdb_downloader);
+    O2_SIGNPOST_EVENT_EMIT_ERROR(ccdb_downloader, sid, "CCDBDownloader", "CCDBDownloader: Socket failed to open");
   }
 
   if (CD->mExternalLoop) {
-    CD->mSocketTimerMap[sock] = new uv_timer_t();
-    uvErrorCheck(uv_timer_init(CD->mUVLoop, CD->mSocketTimerMap[sock]));
+    CD->mSocketTimerMap[sock] = (uv_timer_t*)malloc(sizeof(*CD->mSocketTimerMap[sock]));
+    uvErrorCheck(uv_timer_init(CD->mUVLoop, CD->mSocketTimerMap[sock]), SEVERE);
     CD->mHandleMap[(uv_handle_t*)CD->mSocketTimerMap[sock]] = true;
 
     auto data = new DataForClosingSocket();
@@ -194,10 +207,11 @@ void CCDBDownloader::closeSocketByTimer(uv_timer_t* handle)
   auto sock = data->socket;
 
   if (CD->mSocketTimerMap.find(sock) != CD->mSocketTimerMap.end()) {
-    uvErrorCheck(uv_timer_stop(CD->mSocketTimerMap[sock]));
+    uvErrorCheck(uv_timer_stop(CD->mSocketTimerMap[sock]), SEVERE);
     CD->mSocketTimerMap.erase(sock);
     if (close(sock) == -1) {
-      LOG(error) << "CCDBDownloader: Socket failed to close";
+      O2_SIGNPOST_ID_GENERATE(sid, ccdb_downloader);
+      O2_SIGNPOST_EVENT_EMIT_ERROR(ccdb_downloader, sid, "CCDBDownloader", "CCDBDownloader: Socket failed to close");
     }
     delete data;
   }
@@ -213,7 +227,7 @@ void CCDBDownloader::curlTimeout(uv_timer_t* handle)
 
 void CCDBDownloader::curlPerform(uv_poll_t* handle, int status, int events)
 {
-  uvErrorCheck(status);
+  uvErrorCheck(status, MINOR);
   int running_handles;
   int flags = 0;
   if (events & UV_READABLE) {
@@ -252,20 +266,20 @@ int CCDBDownloader::handleSocket(CURL* easy, curl_socket_t s, int action, void* 
       }
 
       if (CD->mExternalLoop && CD->mSocketTimerMap.find(s) != CD->mSocketTimerMap.end()) {
-        uvErrorCheck(uv_timer_stop(CD->mSocketTimerMap[s]));
+        uvErrorCheck(uv_timer_stop(CD->mSocketTimerMap[s]), SEVERE);
       }
 
-      uvErrorCheck(uv_poll_start(curl_context->poll_handle, events, curlPerform));
+      uvErrorCheck(uv_poll_start(curl_context->poll_handle, events, curlPerform), SEVERE);
       break;
     case CURL_POLL_REMOVE:
       if (socketp) {
         if (CD->mExternalLoop) {
           // If external loop is used then start the keepalive timeout.
           if (CD->mSocketTimerMap.find(s) != CD->mSocketTimerMap.end()) {
-            uvErrorCheck(uv_timer_start(CD->mSocketTimerMap[s], closeSocketByTimer, CD->mKeepaliveTimeoutMS, 0));
+            uvErrorCheck(uv_timer_start(CD->mSocketTimerMap[s], closeSocketByTimer, CD->mKeepaliveTimeoutMS, 0), SEVERE);
           }
         }
-        uvErrorCheck(uv_poll_stop(((CCDBDownloader::curl_context_t*)socketp)->poll_handle));
+        uvErrorCheck(uv_poll_stop(((CCDBDownloader::curl_context_t*)socketp)->poll_handle), SEVERE);
         CD->destroyCurlContext((CCDBDownloader::curl_context_t*)socketp);
         curlMultiErrorCheck(curl_multi_assign(socketData->curlm, s, nullptr));
       }
@@ -323,9 +337,9 @@ CCDBDownloader::curl_context_t* CCDBDownloader::createCurlContext(curl_socket_t 
   context = (curl_context_t*)malloc(sizeof(*context));
   context->CD = this;
   context->sockfd = sockfd;
-  context->poll_handle = new uv_poll_t();
+  context->poll_handle = (uv_poll_t*)malloc(sizeof(*context->poll_handle));
 
-  uvErrorCheck(uv_poll_init_socket(mUVLoop, context->poll_handle, sockfd));
+  uvErrorCheck(uv_poll_init_socket(mUVLoop, context->poll_handle, sockfd), SEVERE);
   mHandleMap[(uv_handle_t*)(context->poll_handle)] = true;
   context->poll_handle->data = context;
 
@@ -335,7 +349,7 @@ CCDBDownloader::curl_context_t* CCDBDownloader::createCurlContext(curl_socket_t 
 void CCDBDownloader::curlCloseCB(uv_handle_t* handle)
 {
   auto* context = (curl_context_t*)handle->data;
-  delete context->poll_handle;
+  free(context->poll_handle);
   free(context);
 }
 
@@ -354,40 +368,108 @@ void CCDBDownloader::tryNewHost(PerformData* performData, CURL* easy_handle)
   mHandlesToBeAdded.push_back(easy_handle);
 }
 
-void CCDBDownloader::getLocalContent(PerformData* performData, std::string& newUrl, std::string& newLocation, bool& contentRetrieved, std::vector<std::string>& locations)
+void CCDBDownloader::getLocalContent(PerformData* performData, std::string& newLocation, bool& contentRetrieved, std::vector<std::string>& locations)
 {
   auto requestData = performData->requestData;
-  newUrl = newLocation;
-  LOG(debug) << "Redirecting to local content " << newUrl << "\n";
-  if (requestData->localContentCallback(newUrl)) {
+  LOG(debug) << "Redirecting to local content " << newLocation << "\n";
+  if (requestData->localContentCallback(newLocation)) {
     contentRetrieved = true;
   } else {
     // Prepare next redirect url
-    newLocation = (performData->locInd < locations.size()) ? locations.at(performData->locInd) : "";
-    performData->locInd++;
+    newLocation = getNewLocation(performData, locations);
   }
 }
 
-void CCDBDownloader::httpRedirect(PerformData* performData, std::string& newUrl, std::string& newLocation, CURL* easy_handle)
+std::string CCDBDownloader::getNewLocation(PerformData* performData, std::vector<std::string>& locations) const
 {
   auto requestData = performData->requestData;
-  newUrl = requestData->hosts.at(performData->hostInd) + newLocation;
-  LOG(debug) << "Trying content location " << newUrl;
-  curl_easy_setopt(easy_handle, CURLOPT_URL, newUrl.c_str());
+  if (performData->locInd < locations.size()) {
+    std::string newLocation = locations.at(performData->locInd++);
+    std::string hostUrl = requestData->hosts.at(performData->hostInd);
+    std::string newUrl = prepareRedirectedURL(newLocation, hostUrl);
+    return newUrl;
+  } else {
+    return "";
+  }
+}
+
+void CCDBDownloader::httpRedirect(PerformData* performData, std::string& newLocation, CURL* easy_handle)
+{
+  auto requestData = performData->requestData;
+  LOG(debug) << "Trying content location " << newLocation;
+  curl_easy_setopt(easy_handle, CURLOPT_URL, newLocation.c_str());
   mHandlesToBeAdded.push_back(easy_handle);
 }
 
 void CCDBDownloader::followRedirect(PerformData* performData, CURL* easy_handle, std::vector<std::string>& locations, bool& rescheduled, bool& contentRetrieved)
 {
-  std::string newLocation = locations.at(performData->locInd++);
-  std::string newUrl;
+  std::string newLocation = getNewLocation(performData, locations);
   if (newLocation.find("alien:/", 0) != std::string::npos || newLocation.find("file:/", 0) != std::string::npos) {
-    getLocalContent(performData, newUrl, newLocation, contentRetrieved, locations);
+    getLocalContent(performData, newLocation, contentRetrieved, locations);
   }
   if (!contentRetrieved && newLocation != "") {
-    httpRedirect(performData, newUrl, newLocation, easy_handle);
+    httpRedirect(performData, newLocation, easy_handle);
     rescheduled = true;
   }
+}
+
+std::string CCDBDownloader::trimHostUrl(std::string full_host_url) const
+{
+  CURLU* host_url = curl_url();
+  curl_url_set(host_url, CURLUPART_URL, full_host_url.c_str(), 0);
+
+  // Get host part (the only critical part)
+  char* host;
+  CURLUcode host_result = curl_url_get(host_url, CURLUPART_HOST, &host, 0);
+  if (host_result != CURLUE_OK) {
+    LOG(error) << "CCDBDownloader: Malformed url detected when processing redirect, could not identify the host part: " << full_host_url;
+    curl_url_cleanup(host_url);
+    return "";
+  }
+  // Get scheme (protocol) part
+  char* scheme;
+  CURLUcode scheme_result = curl_url_get(host_url, CURLUPART_SCHEME, &scheme, 0);
+  // Get port
+  char* port;
+  CURLUcode port_result = curl_url_get(host_url, CURLUPART_PORT, &port, 0);
+
+  curl_url_cleanup(host_url);
+
+  // Assemble parts
+  std::string trimmed_url = "";
+  if (scheme_result == CURLUE_OK) {
+    trimmed_url += scheme + std::string("://");
+    free(scheme);
+  }
+  trimmed_url += host;
+  free(host);
+  if (port_result == CURLUE_OK) {
+    trimmed_url += std::string(":") + port;
+    free(port);
+  }
+  return trimmed_url;
+}
+
+std::string CCDBDownloader::prepareRedirectedURL(std::string address, std::string potentialHost) const
+{
+  // If it is an alien or local address it does not need preparation
+  if (address.find("alien:/") != std::string::npos || address.find("file:/") != std::string::npos) {
+    return address;
+  }
+  // Check if URL contains a scheme (protocol)
+  CURLU* redirected_url = curl_url();
+  curl_url_set(redirected_url, CURLUPART_URL, address.c_str(), 0);
+  char* scheme;
+  CURLUcode scheme_result = curl_url_get(redirected_url, CURLUPART_SCHEME, &scheme, 0);
+  curl_free(scheme);
+  curl_url_cleanup(redirected_url);
+  if (scheme_result == CURLUE_OK) {
+    // The redirected_url contains a scheme (protocol) so there is no need for preparation
+    return address;
+  }
+  // If the address doesn't contain a scheme it means it is a relative url. We need to append it to the trimmed host url
+  // The host url must be trimmed from it's path (if it ends in one) as otherwise the redirection url would be appended after said path
+  return trimHostUrl(potentialHost) + address;
 }
 
 void CCDBDownloader::transferFinished(CURL* easy_handle, CURLcode curlCode)
@@ -402,44 +484,51 @@ void CCDBDownloader::transferFinished(CURL* easy_handle, CURLcode curlCode)
   bool rescheduled = false;
   bool contentRetrieved = false;
 
+  if (curlCode != 0) {
+    LOG(error) << "CCDBDownloader CURL transfer error - " << curl_easy_strerror(curlCode) << "\n";
+  }
+
   switch (performData->type) {
     case BLOCKING: {
       --(*performData->requestsLeft);
     } break;
     case ASYNCHRONOUS: {
       DownloaderRequestData* requestData = performData->requestData;
-
       if (requestData->headers) {
         for (auto& p : requestData->hoPair.header) {
           (*requestData->headers)[p.first] = p.second;
         }
       }
-      if (requestData->errorflag && requestData->headers) {
-        (*requestData->headers)["Error"] = "An error occurred during retrieval";
-      }
-
       // Log that transfer finished
       long httpCode;
       curl_easy_getinfo(easy_handle, CURLINFO_RESPONSE_CODE, &httpCode);
       char* url;
       curl_easy_getinfo(easy_handle, CURLINFO_EFFECTIVE_URL, &url);
       LOG(debug) << "Transfer for " << url << " finished with code " << httpCode << "\n";
+      std::string currentHost = requestData->hosts[performData->hostInd];
+      std::string loggingMessage = prepareLogMessage(currentHost, requestData->userAgent, requestData->path, requestData->timestamp, requestData->headers, httpCode);
 
       // Get alternative locations for the same host
-      auto locations = getLocations(requestData->hosts.at(performData->hostInd), &(requestData->hoPair.header));
+      auto locations = getLocations(&(requestData->hoPair.header));
 
       // React to received http code
-      if (404 == httpCode) {
-        LOG(error) << "Requested resource does not exist: " << url;
-      } else if (304 == httpCode) {
-        LOGP(debug, "Object exists but I am not serving it since it's already in your possession");
-        contentRetrieved = true;
-      } else if (300 <= httpCode && httpCode < 400 && performData->locInd < locations.size()) {
-        followRedirect(performData, easy_handle, locations, rescheduled, contentRetrieved);
-      } else if (200 <= httpCode && httpCode < 300) {
-        contentRetrieved = true;
+      if (200 <= httpCode && httpCode < 400) {
+        LOG(debug) << loggingMessage;
+        if (304 == httpCode) {
+          LOGP(debug, "Object exists but I am not serving it since it's already in your possession");
+          contentRetrieved = true;
+        } else if (300 <= httpCode && httpCode < 400 && performData->locInd < locations.size()) {
+          followRedirect(performData, easy_handle, locations, rescheduled, contentRetrieved);
+        } else if (200 <= httpCode && httpCode < 300) {
+          contentRetrieved = true; // Can be overruled by following error check
+        }
       } else {
-        LOG(error) << "Error in fetching object " << url << ", curl response code:" << httpCode;
+        LOG(error) << loggingMessage;
+      }
+
+      // Check for errors
+      if (curlCode != 0) {
+        contentRetrieved = false;
       }
 
       // Check if content was retrieved, or scheduled to be retrieved
@@ -455,12 +544,24 @@ void CCDBDownloader::transferFinished(CURL* easy_handle, CURLcode curlCode)
 
       if (!rescheduled) {
         // No more transfers will be done for this request, do cleanup specific for ASYNCHRONOUS calls
+        if (!contentRetrieved) {
+          if (requestData->hoPair.object) {
+            requestData->hoPair.object->clear();
+          }
+          if (requestData->headers) {
+            (*requestData->headers)["Error"] = "An error occurred during retrieval";
+          }
+          LOGP(alarm, "Curl request to {}, response code: {}", url, httpCode);
+        } else {
+          if (requestData->headers && requestData->headers->find("fileSize") == requestData->headers->end()) {
+            (*requestData->headers)["fileSize"] = fmt::format("{}", requestData->hoPair.object ? requestData->hoPair.object->size() : 0);
+          }
+        }
         --(*performData->requestsLeft);
+        curl_slist_free_all(*performData->options);
         delete requestData;
         delete performData->codeDestination;
-        if (!contentRetrieved) {
-          LOGP(alarm, "Curl request to {}, response code: {}", url, httpCode);
-        }
+        curl_easy_cleanup(easy_handle);
       }
     } break;
   }
@@ -501,12 +602,12 @@ int CCDBDownloader::startTimeout(CURLM* multi, long timeout_ms, void* userp)
   auto timeout = (uv_timer_t*)userp;
 
   if (timeout_ms < 0) {
-    uvErrorCheck(uv_timer_stop(timeout));
+    uvErrorCheck(uv_timer_stop(timeout), SEVERE);
   } else {
     if (timeout_ms == 0) {
       timeout_ms = 1; // Calling curlTimeout when timeout = 0 could create an infinite loop
     }
-    uvErrorCheck(uv_timer_start(timeout, curlTimeout, timeout_ms, 0));
+    uvErrorCheck(uv_timer_start(timeout, curlTimeout, timeout_ms, 0), SEVERE);
   }
   return 0;
 }
@@ -549,16 +650,12 @@ CURLcode CCDBDownloader::perform(CURL* handle)
   return batchBlockingPerform(handleVector).back();
 }
 
-std::vector<std::string> CCDBDownloader::getLocations(std::string baseUrl, std::multimap<std::string, std::string>* headerMap) const
+std::vector<std::string> CCDBDownloader::getLocations(std::multimap<std::string, std::string>* headerMap) const
 {
   std::vector<std::string> locs;
   auto iter = headerMap->find("Location");
   if (iter != headerMap->end()) {
-    if (iter->second.find("/", 0) != std::string::npos) {
-      locs.push_back(iter->second);
-    } else {
-      locs.push_back(baseUrl + iter->second);
-    }
+    locs.push_back(iter->second);
   }
   // add alternative locations (not yet included)
   auto iter2 = headerMap->find("Content-Location");
@@ -566,11 +663,7 @@ std::vector<std::string> CCDBDownloader::getLocations(std::string baseUrl, std::
     auto range = headerMap->equal_range("Content-Location");
     for (auto it = range.first; it != range.second; ++it) {
       if (std::find(locs.begin(), locs.end(), it->second) == locs.end()) {
-        if (it->second.find("alien", 0) != std::string::npos) {
-          locs.push_back(it->second);
-        } else {
-          locs.push_back(baseUrl + it->second);
-        }
+        locs.push_back(it->second);
       }
     }
   }
@@ -613,6 +706,7 @@ void CCDBDownloader::asynchSchedule(CURL* handle, size_t* requestCounter)
   curl_easy_getinfo(handle, CURLINFO_PRIVATE, &requestData);
   headerMap = &(requestData->hoPair.header);
   hostsPool = &(requestData->hosts);
+  auto* options = &(requestData->optionsList);
 
   // Prepare temporary data about transfer
   auto* data = new CCDBDownloader::PerformData(); // Freed in transferFinished
@@ -624,6 +718,7 @@ void CCDBDownloader::asynchSchedule(CURL* handle, size_t* requestCounter)
   data->hostInd = 0;
   data->locInd = 0;
   data->requestData = requestData;
+  data->options = options;
 
   // Prepare handle and schedule download
   setHandleOptions(handle, data);
@@ -634,4 +729,21 @@ void CCDBDownloader::asynchSchedule(CURL* handle, size_t* requestCounter)
   // return codeVector;
 }
 
-} // namespace o2
+std::string CCDBDownloader::prepareLogMessage(std::string host_url, std::string userAgent, const std::string& path, long ts, const std::map<std::string, std::string>* headers, long httpCode) const
+{
+  std::string upath{path};
+  if (headers) {
+    auto ent = headers->find("Valid-From");
+    if (ent != headers->end()) {
+      upath += "/" + ent->second;
+    }
+    ent = headers->find("ETag");
+    if (ent != headers->end()) {
+      upath += "/" + ent->second;
+    }
+  }
+  upath.erase(remove(upath.begin(), upath.end(), '\"'), upath.end());
+  return fmt::format("CcdbDownloader finished transfer {}{}{} for {} (agent_id: {}) with http code: {}", host_url, (host_url.back() == '/') ? "" : "/", upath, (ts < 0) ? getCurrentTimestamp() : ts, userAgent, httpCode);
+}
+
+} // namespace o2::ccdb

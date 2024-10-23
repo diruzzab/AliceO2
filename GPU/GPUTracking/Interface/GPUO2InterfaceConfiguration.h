@@ -81,10 +81,10 @@ struct GPUO2InterfaceConfiguration {
   struct GPUInterfaceSettings {
     bool outputToExternalBuffers = false;
     // These constants affect GPU memory allocation only and do not limit the CPU processing
-    unsigned long maxTPCZS = 8192ul * 1024 * 1024;
-    unsigned int maxTPCHits = 1024 * 1024 * 1024;
-    unsigned int maxTRDTracklets = 128 * 1024;
-    unsigned int maxITSTracks = 96 * 1024;
+    uint64_t maxTPCZS = 8192ul * 1024 * 1024;
+    uint32_t maxTPCHits = 1024 * 1024 * 1024;
+    uint32_t maxTRDTracklets = 128 * 1024;
+    uint32_t maxITSTracks = 96 * 1024;
   };
 
   GPUSettingsDeviceBackend configDeviceBackend;
@@ -98,11 +98,10 @@ struct GPUO2InterfaceConfiguration {
   GPUCalibObjectsConst configCalib;
 
   GPUSettingsO2 ReadConfigurableParam();
+  static GPUSettingsO2 ReadConfigurableParam(GPUO2InterfaceConfiguration& obj);
   void PrintParam();
 
  private:
-  friend class GPUReconstruction;
-  GPUSettingsO2 ReadConfigurableParam_internal();
   void PrintParam_internal();
 };
 

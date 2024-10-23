@@ -25,20 +25,12 @@
 #include "Framework/CustomWorkflowTerminationHook.h"
 #include "Framework/CommonServices.h"
 #include "Framework/WorkflowCustomizationHelpers.h"
-#include "Framework/RuntimeError.h"
 #include "Framework/ResourcePolicyHelpers.h"
 #include "Framework/Logger.h"
 #include "Framework/CheckTypes.h"
 #include "Framework/StructToTuple.h"
-
+#include "Framework/ConfigParamDiscovery.h"
 #include <vector>
-#include <cstring>
-#include <exception>
-
-namespace boost
-{
-class exception;
-}
 
 namespace o2::framework
 {
@@ -145,11 +137,9 @@ int doMain(int argc, char** argv, o2::framework::WorkflowSpec const& specs,
            std::vector<o2::framework::CallbacksPolicy> const& callbacksPolicies,
            std::vector<o2::framework::SendingPolicy> const& sendingPolicies,
            std::vector<o2::framework::ConfigParamSpec> const& workflowOptions,
+           std::vector<o2::framework::ConfigParamSpec> const& detectedOptions,
            o2::framework::ConfigContext& configContext);
 
-void doBoostException(boost::exception& e, const char*);
-void doDPLException(o2::framework::RuntimeErrorRef& ref, char const*);
-void doUnknownException(std::string const& s, char const*);
 void doDefaultWorkflowTerminationHook();
 
 template <typename T>
@@ -203,6 +193,12 @@ int mainNoCatch(int argc, char** argv)
   workflowOptionsStore->preload();
   workflowOptionsStore->activate();
   ConfigParamRegistry workflowOptionsRegistry(std::move(workflowOptionsStore));
+  auto extraOptions = o2::framework::ConfigParamDiscovery::discover(workflowOptionsRegistry, argc, argv);
+  for (auto& extra : extraOptions) {
+    workflowOptions.push_back(extra);
+  }
+  workflowOptionsRegistry.loadExtra(extraOptions);
+
   ConfigContext configContext(workflowOptionsRegistry, argc, argv);
   o2::framework::WorkflowSpec specs = defineDataProcessing(configContext);
   overrideCloning(configContext, specs);
@@ -217,52 +213,20 @@ int mainNoCatch(int argc, char** argv)
   channelPolicies.insert(std::end(channelPolicies), std::begin(defaultChannelPolicies), std::end(defaultChannelPolicies));
   return doMain(argc, argv, specs,
                 channelPolicies, completionPolicies, dispatchPolicies,
-                resourcePolicies, callbacksPolicies, sendingPolicies, workflowOptions, configContext);
+                resourcePolicies, callbacksPolicies, sendingPolicies, workflowOptions, extraOptions, configContext);
 }
+
+int callMain(int argc, char** argv, int (*)(int, char**));
+char* getIdString(int argc, char** argv);
 
 int main(int argc, char** argv)
 {
   using namespace o2::framework;
   using namespace boost::program_options;
 
-  static bool noCatch = getenv("O2_NO_CATCHALL_EXCEPTIONS") && strcmp(getenv("O2_NO_CATCHALL_EXCEPTIONS"), "0");
-  int result = 1;
-  if (noCatch) {
-    try {
-      result = mainNoCatch(argc, argv);
-    } catch (o2::framework::RuntimeErrorRef& ref) {
-      doDPLException(ref, argv[0]);
-      throw;
-    }
-  } else {
-    try {
-      // The 0 here is an int, therefore having the template matching in the
-      // SFINAE expression above fit better the version which invokes user code over
-      // the default one.
-      // The default policy is a catch all pub/sub setup to be consistent with the past.
-      result = mainNoCatch(argc, argv);
-    } catch (boost::exception& e) {
-      doBoostException(e, argv[0]);
-      throw;
-    } catch (std::exception const& error) {
-      doUnknownException(error.what(), argv[0]);
-      throw;
-    } catch (o2::framework::RuntimeErrorRef& ref) {
-      doDPLException(ref, argv[0]);
-      throw;
-    } catch (...) {
-      doUnknownException("", argv[0]);
-      throw;
-    }
-  }
+  int result = callMain(argc, argv, mainNoCatch);
 
-  char* idstring = nullptr;
-  for (int argi = 0; argi < argc; argi++) {
-    if (strcmp(argv[argi], "--id") == 0 && argi + 1 < argc) {
-      idstring = argv[argi + 1];
-      break;
-    }
-  }
+  char* idstring = getIdString(argc, argv);
   o2::framework::OnWorkflowTerminationHook onWorkflowTerminationHook;
   UserCustomizationsHelper::userDefinedCustomization(onWorkflowTerminationHook, 0);
   onWorkflowTerminationHook(idstring);

@@ -78,8 +78,8 @@ void VertexTrackMatcherSpec::run(ProcessingContext& pc)
 
   mMatcher.process(recoData, trackIndex, vtxRefs);
 
-  pc.outputs().snapshot(Output{"GLO", "PVTX_TRMTC", 0, Lifetime::Timeframe}, trackIndex);
-  pc.outputs().snapshot(Output{"GLO", "PVTX_TRMTCREFS", 0, Lifetime::Timeframe}, vtxRefs);
+  pc.outputs().snapshot(Output{"GLO", "PVTX_TRMTC", 0}, trackIndex);
+  pc.outputs().snapshot(Output{"GLO", "PVTX_TRMTCREFS", 0}, vtxRefs);
 
   mTimer.Stop();
   LOG(info) << "Made " << trackIndex.size() << " track associations for " << recoData.getPrimaryVertices().size()
@@ -150,7 +150,7 @@ DataProcessorSpec getVertexTrackMatcherSpec(GTrackID::mask_t src)
 
   dataRequest->requestTracks(src, false);
   dataRequest->requestClusters(src & GTrackID::getSourcesMask("EMC,PHS,CPV"), false);
-  dataRequest->requestPrimaryVerterticesTMP(false);
+  dataRequest->requestPrimaryVerticesTMP(false);
 
   auto ggRequest = std::make_shared<o2::base::GRPGeomRequest>(false,                          // orbitResetTime
                                                               true,                           // GRPECS=true

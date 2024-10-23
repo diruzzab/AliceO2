@@ -64,6 +64,10 @@ class CcdbApi //: public DatabaseInterface
   /// \brief Default destructor
   virtual ~CcdbApi();
 
+  // Delete copy and copy assignment constructor
+  CcdbApi(const CcdbApi&) = delete;
+  void operator=(const CcdbApi&) = delete;
+
   const std::string getUniqueAgentID() const { return mUniqueAgentID; }
 
   static bool checkAlienToken();
@@ -121,34 +125,34 @@ class CcdbApi //: public DatabaseInterface
   static std::unique_ptr<std::vector<char>> createObjectImage(const void* obj, std::type_info const& tinfo, CcdbObjectInfo* info = nullptr);
 
   /**
-     * Store into the CCDB a TFile containing the ROOT object.
-     *
-     * @param rootObject Raw pointer to the object to store.
-     * @param path The path where the object is going to be stored.
-     * @param metadata Key-values representing the metadata for this object.
-     * @param startValidityTimestamp Start of validity. If omitted, current timestamp is used.
-     * @param endValidityTimestamp End of validity. If omitted, current timestamp + 1 day is used.
-     * @return 0 -> ok,
-     *         positive number -> curl error (https://curl.se/libcurl/c/libcurl-errors.html),
-     *         -1 : object bigger than maxSize,
-     *         -2 : curl initialization error
-     */
+   * Store into the CCDB a TFile containing the ROOT object.
+   *
+   * @param rootObject Raw pointer to the object to store.
+   * @param path The path where the object is going to be stored.
+   * @param metadata Key-values representing the metadata for this object.
+   * @param startValidityTimestamp Start of validity. If omitted, current timestamp is used.
+   * @param endValidityTimestamp End of validity. If omitted, current timestamp + 1 day is used.
+   * @return 0 -> ok,
+   *         positive number -> curl error (https://curl.se/libcurl/c/libcurl-errors.html),
+   *         -1 : object bigger than maxSize,
+   *         -2 : curl initialization error
+   */
   int storeAsTFile(const TObject* rootObject, std::string const& path, std::map<std::string, std::string> const& metadata,
                    long startValidityTimestamp = -1, long endValidityTimestamp = -1, std::vector<char>::size_type maxSize = 0 /*bytes*/) const;
 
   /**
-     * Store into the CCDB a TFile containing an object of type T (which needs to have a ROOT dictionary)
-     *
-     * @param obj Raw pointer to the object to store.
-     * @param path The path where the object is going to be stored.
-     * @param metadata Key-values representing the metadata for this object.
-     * @param startValidityTimestamp Start of validity. If omitted, current timestamp is used.
-     * @param endValidityTimestamp End of validity. If omitted, current timestamp + 1 day is used.
-     * @return 0 -> ok,
-     *         positive number -> curl error (https://curl.se/libcurl/c/libcurl-errors.html),
-     *         -1 : object bigger than maxSize,
-     *         -2 : curl initialization error
-     */
+   * Store into the CCDB a TFile containing an object of type T (which needs to have a ROOT dictionary)
+   *
+   * @param obj Raw pointer to the object to store.
+   * @param path The path where the object is going to be stored.
+   * @param metadata Key-values representing the metadata for this object.
+   * @param startValidityTimestamp Start of validity. If omitted, current timestamp is used.
+   * @param endValidityTimestamp End of validity. If omitted, current timestamp + 1 day is used.
+   * @return 0 -> ok,
+   *         positive number -> curl error (https://curl.se/libcurl/c/libcurl-errors.html),
+   *         -1 : object bigger than maxSize,
+   *         -2 : curl initialization error
+   */
   template <typename T>
   int storeAsTFileAny(const T* obj, std::string const& path, std::map<std::string, std::string> const& metadata,
                       long startValidityTimestamp = -1, long endValidityTimestamp = -1, std::vector<char>::size_type maxSize = 0 /*bytes*/) const
@@ -235,7 +239,7 @@ class CcdbApi //: public DatabaseInterface
    * @param returnFormat The format of the returned string -> one of "text/plain (default)", "application/json", "text/xml"
    * @return The listing of folder and/or objects in the format requested
    */
-  std::string list(std::string const& path = "", bool latestOnly = false, std::string const& returnFormat = "text/plain") const;
+  std::string list(std::string const& path = "", bool latestOnly = false, std::string const& returnFormat = "text/plain", long createdNotAfter = -1, long createdNotBefore = -1) const;
 
   /**
    * Make a local snapshot of all valid objects, given a timestamp, of the CCDB under a given local path.
@@ -251,12 +255,12 @@ class CcdbApi //: public DatabaseInterface
   bool isHostReachable() const;
 
   /**
-  * Helper function to extract the list of sub-folders from a list reply into a vector container.
-  * Can be used to achieve full recursive traversal/listing of the CCDB.
-  *
-  * @param reply The reply that we got from a GET/browse sort of request.
-  * @return The vector of sub-folders.
-  */
+   * Helper function to extract the list of sub-folders from a list reply into a vector container.
+   * Can be used to achieve full recursive traversal/listing of the CCDB.
+   *
+   * @param reply The reply that we got from a GET/browse sort of request.
+   * @return The vector of sub-folders.
+   */
   std::vector<std::string> parseSubFolders(std::string const& reply) const;
 
   /**
@@ -369,10 +373,16 @@ class CcdbApi //: public DatabaseInterface
   void scheduleDownload(RequestContext& requestContext, size_t* requestCounter) const;
 
   void getFromSnapshot(bool createSnapshot, std::string const& path,
-                       long timestamp, std::map<std::string, std::string> headers,
+                       long timestamp, std::map<std::string, std::string>& headers,
                        std::string& snapshotpath, o2::pmr::vector<char>& dest, int& fromSnapshot, std::string const& etag) const;
-  void releaseNamedSemaphore(boost::interprocess::named_semaphore* sem, std::string path) const;
-  boost::interprocess::named_semaphore* createNamedSempahore(std::string path) const;
+  void releaseNamedSemaphore(boost::interprocess::named_semaphore* sem, std::string const& path) const;
+  boost::interprocess::named_semaphore* createNamedSemaphore(std::string const& path) const;
+  static std::string determineSemaphoreName(std::string const& basedir, std::string const& objectpath);
+  // queries and optionally removes a named semaphore from the system
+  // returns true when successful (either found or found + removed)
+  static bool removeSemaphore(std::string const& name, bool remove = false);
+  static void removeLeakingSemaphores(std::string const& basedir, bool remove = false);
+
   void loadFileToMemory(o2::pmr::vector<char>& dest, const std::string& path, std::map<std::string, std::string>* localHeaders = nullptr) const;
   void loadFileToMemory(o2::pmr::vector<char>& dest, std::string const& path,
                         std::map<std::string, std::string> const& metadata, long timestamp,
@@ -381,6 +391,9 @@ class CcdbApi //: public DatabaseInterface
 
   // Loads files from alien and cvmfs into given destination.
   bool loadLocalContentToMemory(o2::pmr::vector<char>& dest, std::string& url) const;
+
+  // add annotated flattened headers in the end of the blob
+  static void appendFlatHeader(o2::pmr::vector<char>& dest, const std::map<std::string, std::string>& headers);
 
   // the failure to load the file to memory is signaled by 0 size and non-0 capacity
   static bool isMemoryFileInvalid(const o2::pmr::vector<char>& v) { return v.size() == 0 && v.capacity() > 0; }
@@ -538,7 +551,7 @@ class CcdbApi //: public DatabaseInterface
    * @param tcl The TClass object describing the serialized type
    * @return raw pointer to created object
    */
-  void* downloadFilesystemContent(std::string const& fullUrl, std::type_info const& tinfo) const;
+  void* downloadFilesystemContent(std::string const& fullUrl, std::type_info const& tinfo, std::map<string, string>* headers) const;
 
   // initialize the TGrid (Alien connection)
   bool initTGrid() const;
@@ -581,9 +594,9 @@ class CcdbApi //: public DatabaseInterface
                      const std::string& createdNotAfter, const std::string& createdNotBefore, bool followRedirect, CurlWriteCallback writeCallback) const;
 
   /**
-  * Initialize hostsPool
-  * @param hosts string with hosts separated by "," or ";"
-  */
+   * Initialize hostsPool
+   * @param hosts string with hosts separated by "," or ";"
+   */
   void initHostsPool(std::string hosts);
 
   std::string getHostUrl(int hostIndex) const;
@@ -598,6 +611,16 @@ class CcdbApi //: public DatabaseInterface
   std::string getSnapshotFile(const std::string& topdir, const std::string& path, const std::string& sfile = "snapshot.root") const
   {
     return getSnapshotDir(topdir, path) + '/' + sfile;
+  }
+
+  template <typename MAP> // can be either std::map or std::multimap
+  static size_t getFlatHeaderSize(const MAP& Headers)
+  {
+    size_t hsize = sizeof(int) + sizeof(FlatHeaderAnnot); // annotation size
+    for (auto& h : Headers) {
+      hsize += h.first.length() + h.second.length() + 2; // 2*(string_buffer + terminating null character)
+    }
+    return hsize;
   }
 
   // tmp helper and single point of entry for a CURL perform call
@@ -619,6 +642,10 @@ class CcdbApi //: public DatabaseInterface
   static std::unique_ptr<TJAlienCredentials> mJAlienCredentials; // access JAliEn credentials
   int mCurlRetries = 3;
   int mCurlDelayRetries = 100000; // in microseconds
+  size_t mCurlTimeoutDownload = 15; // download timeout in seconds, can be configured via ALICEO2_CCDB_CURL_TIMEOUT_DOWNLOAD, updated according to the deployment mode
+  size_t mCurlTimeoutUpload = 15;   // upload timeout in seconds, can be configured via ALICEO2_CCDB_CURL_TIMEOUT_UPLOAD, updated according to the deployment mode
+
+  static constexpr char FlatHeaderAnnot[] = "$HEADER$"; // annotation for flat header
 
   ClassDefNV(CcdbApi, 1);
 };
@@ -650,4 +677,4 @@ typename std::enable_if<std::is_base_of<o2::conf::ConfigurableParam, T>::value, 
 } // namespace ccdb
 } // namespace o2
 
-#endif //PROJECT_CCDBAPI_H
+#endif // PROJECT_CCDBAPI_H

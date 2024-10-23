@@ -139,6 +139,12 @@ class MCTrackT
     }
   }
 
+  Double_t GetTgl() const
+  {
+    auto pT = GetPt();
+    return pT > 1e-6 ? mStartVertexMomentumZ / pT : (GetStartVertexMomentumZ() > 0 ? 999. : -999.);
+  }
+
   Double_t GetTheta() const
   {
     double mz(mStartVertexMomentumZ);
@@ -280,7 +286,6 @@ class MCTrackT
       int storage : 1;  // encoding whether to store this track to the output
       unsigned int process : 6; // encoding process that created this track (enough to store TMCProcess from ROOT)
       int hitmask : NHITBITS;   // encoding hits per detector
-      static_assert(o2::detectors::DetID::nDetectors <= 22); // ensure that all known detectors can be encoded here by a bit
       int reserved1 : 1;        // bit reserved for possible future purposes
       int inhibited : 1; // whether tracking of this was inhibited
       int toBeDone : 1; // whether this (still) needs tracking --> we might more complete information to cover full ParticleStatus space
@@ -299,8 +304,10 @@ template <typename T>
 inline Double_t MCTrackT<T>::GetEnergy() const
 {
   const auto mass = GetMass();
-  return std::sqrt(mass * mass + mStartVertexMomentumX * mStartVertexMomentumX +
-                   mStartVertexMomentumY * mStartVertexMomentumY + mStartVertexMomentumZ * mStartVertexMomentumZ);
+  Double_t px = mStartVertexMomentumX;
+  Double_t py = mStartVertexMomentumY;
+  Double_t pz = mStartVertexMomentumZ;
+  return std::sqrt(mass * mass + px * px + py * py + pz * pz);
 }
 
 template <typename T>

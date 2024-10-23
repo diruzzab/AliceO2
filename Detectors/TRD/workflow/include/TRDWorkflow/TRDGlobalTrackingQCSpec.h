@@ -31,6 +31,7 @@
 #include "ReconstructionDataFormats/GlobalTrackID.h"
 #include "DataFormatsGlobalTracking/RecoContainer.h"
 #include "TRDQC/Tracking.h"
+#include <cstring>
 
 #include "DetectorsBase/GRPGeomHelper.h"
 
@@ -54,6 +55,10 @@ class TRDGlobalTrackingQC : public Task
     if (!mTPCavailable) {
       mQC.disablePID();
     }
+    if (getenv("ALIEN_JDL_LPMPRODUCTIONTYPE") && std::strcmp(getenv("ALIEN_JDL_LPMPRODUCTIONTYPE"), "MC") == 0) {
+      // apply artificial pad shift in case non-ideal alignment is used to compensate for shift in current alignment from real data
+      mQC.setApplyShift(false);
+    }
   }
   void run(ProcessingContext& pc) final
   {
@@ -63,7 +68,7 @@ class TRDGlobalTrackingQC : public Task
     mQC.reset();
     mQC.setInput(recoData);
     mQC.run();
-    pc.outputs().snapshot(Output{"TRD", "TRACKINGQC", 0, Lifetime::Timeframe}, mQC.getTrackQC());
+    pc.outputs().snapshot(Output{"TRD", "TRACKINGQC", 0}, mQC.getTrackQC());
   }
   void endOfStream(framework::EndOfStreamContext& ec) final {}
   void finaliseCCDB(framework::ConcreteDataMatcher& matcher, void* obj) final

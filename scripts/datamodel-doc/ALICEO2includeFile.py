@@ -921,9 +921,16 @@ def extractTables(nslevel, content):
   for icol in inds:
     iend = [i for i, x in enumerate(
         O2DMT.list_in([")", ";"], words[icol:])) if x == True]
+    iend1 = [i for i, x in enumerate(
+        O2DMT.list_in([")"], words[icol:])) if x == True]
     if len(iend) == 0:
-      print(nslevel)
-      sys.exit('Ending ); not found in table declaration! EXIT -->')
+      if len(iend1) == 0:
+        #print("nslevel: ", nslevel)
+        #print("iend: ", iend1)
+        #print("lines: ", lines)
+        sys.exit('Ending ); not found in table declaration! EXIT -->')
+      else:
+        iend = iend1
     cont = words[icol:iend[0]+icol+2]
 
     kind = [i for i, x in enumerate(types) if x == words[icol].txt][0]
@@ -1071,15 +1078,15 @@ def extractUsings(nslevel, content):
     if len(iend) == 0:
       print(nslevel)
       sys.exit('Ending ; not found in using declaration! EXIT -->')
-    cont = words[icol:icol+iend[0]+1]
 
-    name = fullDataModelName(nslevel, words[icol+1].txt)
+    # make sure that using is not part of a text, like ".... PID using TPC ..." or similar
     definition = O2DMT.block(words[icol+3:icol+iend[0]], False)
-
-    # namespace, name, cont
-    use = using(nslevel, name, definition, O2DMT.block(cont))
-
-    usings.append(use)
+    if ('"' not in definition and "'" not in definition):
+      # namespace, name, cont
+      name = fullDataModelName(nslevel, words[icol+1].txt)
+      cont = words[icol:icol+iend[0]+1]
+      use = using(nslevel, name, definition, O2DMT.block(cont))
+      usings.append(use)
 
   return usings
 
@@ -1137,8 +1144,7 @@ class CERelations:
   def getExecutable(self, codeFile):
     # find the executable corresponding to codeFile
     CErelation = ["", "", ""]
-    ice = [ind for ind, x in enumerate(
-        self.relations) if x[0]+x[1] == codeFile]
+    ice = [ind for ind, x in enumerate(self.relations) if x[0]+x[1] == codeFile]
     if len(ice) > 0:
       CErelation = self.relations[ice[0]]
     return CErelation

@@ -11,6 +11,10 @@
 
 #include "Framework/StreamContext.h"
 
+#include "Framework/Signpost.h"
+
+O2_DECLARE_DYNAMIC_LOG(stream_context);
+
 namespace o2::framework
 {
 
@@ -27,12 +31,17 @@ void StreamContext::preStartStreamCallbacks(ServiceRegistryRef ref)
 /// Invoke callbacks to be executed before every process method invokation
 void StreamContext::preProcessingCallbacks(ProcessingContext& pcx)
 {
+  O2_SIGNPOST_ID_FROM_POINTER(dpid, stream_context, &pcx);
+  O2_SIGNPOST_START(stream_context, dpid, "callbacks", "Starting StreamContext preProcessingCallbacks");
   for (auto& handle : preProcessingHandles) {
-    LOG(debug) << "Invoking preProcessingCallbacks for" << handle.service;
+    O2_SIGNPOST_ID_FROM_POINTER(cid, stream_context, handle.service);
+    O2_SIGNPOST_START(stream_context, cid, "callbacks", "Starting StreamContext::preProcessingCallbacks for service %{public}s", handle.spec.name.c_str());
     assert(handle.service);
     assert(handle.callback);
     handle.callback(pcx, handle.service);
+    O2_SIGNPOST_END(stream_context, cid, "callbacks", "Ending StreamContext::preProcessingCallbacks for service %{public}s", handle.spec.name.c_str());
   }
+  O2_SIGNPOST_END(stream_context, dpid, "callbacks", "Ending StreamContext preProcessingCallbacks");
 }
 
 /// Invoke callbacks to be executed after every process method invokation
@@ -49,12 +58,17 @@ void StreamContext::finaliseOutputsCallbacks(ProcessingContext& pcx)
 /// Invoke callbacks to be executed after every process method invokation
 void StreamContext::postProcessingCallbacks(ProcessingContext& pcx)
 {
+  O2_SIGNPOST_ID_FROM_POINTER(dpid, stream_context, &pcx);
+  O2_SIGNPOST_START(stream_context, dpid, "callbacks", "Starting StreamContext postProcessingCallbacks");
   for (auto& handle : postProcessingHandles) {
-    LOG(debug) << "Invoking postProcessingCallbacks for " << handle.service;
+    O2_SIGNPOST_ID_FROM_POINTER(cid, stream_context, handle.service);
+    O2_SIGNPOST_START(stream_context, cid, "callbacks", "Starting StreamContext::postProcessingCallbacks for service %{public}s", handle.spec.name.c_str());
     assert(handle.service);
     assert(handle.callback);
     handle.callback(pcx, handle.service);
+    O2_SIGNPOST_END(stream_context, cid, "callbacks", "Ending StreamContext::postProcessingCallbacks for service %{public}s", handle.spec.name.c_str());
   }
+  O2_SIGNPOST_END(stream_context, dpid, "callbacks", "Ending StreamContext postProcessingCallbacks");
 }
 
 /// Invoke callbacks to be executed before every EOS user callback invokation

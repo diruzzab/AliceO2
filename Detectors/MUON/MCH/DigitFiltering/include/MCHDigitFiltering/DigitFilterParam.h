@@ -14,6 +14,7 @@
 
 #include "CommonUtils/ConfigurableParam.h"
 #include "CommonUtils/ConfigurableParamHelper.h"
+#include "MCHStatus/StatusMap.h"
 
 namespace o2::mch
 {
@@ -29,7 +30,8 @@ struct DigitFilterParam : public o2::conf::ConfigurableParamHelper<DigitFilterPa
   bool rejectBackground = true; ///< attempts to reject background (loose background selection, don't kill signal)
   bool selectSignal = false;    ///< attempts to select only signal (strict background selection, might loose signal)
   int timeOffset = 120;         ///< digit time calibration offset
-  uint32_t statusMask = 0;      ///< mask to reject digits based on the statusmap (0=no rejection)
+  /// mask to reject digits based on the statusmap (0 = no rejection)
+  uint32_t statusMask = StatusMap::kBadPedestal | StatusMap::kRejectList | StatusMap::kBadHV;
 
   O2ParamDef(DigitFilterParam, "MCHDigitFilter");
 };

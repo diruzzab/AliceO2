@@ -95,7 +95,7 @@ int main(int argc, char* argv[])
   std::map<std::string, int> offsets;
   std::map<std::string, int> unassignedIndexOffset;
 
-  auto outputFile = TFile::Open(outputFileName.c_str(), "RECREATE", "", 501);
+  auto outputFile = TFile::Open(outputFileName.c_str(), "RECREATE", "", 505);
   TDirectory* outputDir = nullptr;
   long currentDirSize = 0;
 
@@ -388,7 +388,7 @@ int main(int argc, char* argv[])
         }
       }
 
-      if (currentDirSize > maxDirSize) {
+      if (maxDirSize == 0 || currentDirSize > maxDirSize) {
         if (verbosity > 0) {
           printf("Maximum size reached: %ld. Closing folder %s.\n", currentDirSize, dfName);
         }

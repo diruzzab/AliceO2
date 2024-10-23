@@ -40,7 +40,9 @@ void RawDecoderSpec::init(framework::InitContext& ctx)
   int inp2 = mDecoder.setLumiInp(2, lumiinp2);
   mOutputLumiInfo.inp1 = inp1;
   mOutputLumiInfo.inp2 = inp2;
-  LOG(info) << "CTP reco init done. Inputs decoding here:" << decodeinps << " DoLumi:" << mDoLumi << " DoDigits:" << mDoDigits << " NTF:" << mNTFToIntegrate << " Lumi inputs:" << lumiinp1 << ":" << inp1 << " " << lumiinp2 << ":" << inp2 << " Max errors:" << maxerrors;
+  mMaxInputSize = ctx.options().get<int>("max-input-size");
+  mMaxInputSizeFatal = ctx.options().get<bool>("max-input-size-fatal");
+  LOG(info) << "CTP reco init done. Inputs decoding here:" << decodeinps << " DoLumi:" << mDoLumi << " DoDigits:" << mDoDigits << " NTF:" << mNTFToIntegrate << " Lumi inputs:" << lumiinp1 << ":" << inp1 << " " << lumiinp2 << ":" << inp2 << " Max errors:" << maxerrors << " Max input size:" << mMaxInputSize << " MaxInputSizeFatal:" << mMaxInputSizeFatal;
   // mOutputLumiInfo.printInputs();
 }
 void RawDecoderSpec::endOfStream(framework::EndOfStreamContext& ec)
@@ -80,10 +82,10 @@ void RawDecoderSpec::run(framework::ProcessingContext& ctx)
   auto& inputs = ctx.inputs();
   auto dummyOutput = [&ctx, this]() {
     if (this->mDoDigits) {
-      ctx.outputs().snapshot(o2::framework::Output{"CTP", "DIGITS", 0, o2::framework::Lifetime::Timeframe}, this->mOutputDigits);
+      ctx.outputs().snapshot(o2::framework::Output{"CTP", "DIGITS", 0}, this->mOutputDigits);
     }
     if (this->mDoLumi) {
-      ctx.outputs().snapshot(o2::framework::Output{"CTP", "LUMI", 0, o2::framework::Lifetime::Timeframe}, this->mOutputLumiInfo);
+      ctx.outputs().snapshot(o2::framework::Output{"CTP", "LUMI", 0}, this->mOutputLumiInfo);
     }
   };
   // if we see requested data type input with 0xDEADBEEF subspec and 0 payload this means that the "delayed message"
@@ -110,14 +112,38 @@ void RawDecoderSpec::run(framework::ProcessingContext& ctx)
   //
   std::vector<LumiInfo> lumiPointsHBF1;
   std::vector<InputSpec> filter{InputSpec{"filter", ConcreteDataTypeMatcher{"CTP", "RAWDATA"}, Lifetime::Timeframe}};
-  int ret = mDecoder.decodeRaw(inputs, filter, mOutputDigits, lumiPointsHBF1);
+  bool fatal_flag = 0;
+  if (mMaxInputSize > 0) {
+    size_t payloadSize = 0;
+    for (const auto& ref : o2::framework::InputRecordWalker(inputs, filter)) {
+      const auto dh = o2::framework::DataRefUtils::getHeader<o2::header::DataHeader*>(ref);
+      payloadSize += o2::framework::DataRefUtils::getPayloadSize(ref);
+    }
+    if (payloadSize > (size_t)mMaxInputSize) {
+      if (mMaxInputSizeFatal) {
+        fatal_flag = 1;
+        LOG(error) << "Input data size bigger than threshold: " << mMaxInputSize << " < " << payloadSize << " decoding TF and exiting.";
+        // LOG(fatal) << "Input data size:" << payloadSize; - fatal issued in decoder
+      } else {
+        LOG(error) << "Input data size:" << payloadSize << " sending dummy output";
+        dummyOutput();
+        return;
+      }
+    }
+  }
+  int ret = 0;
+  if (fatal_flag) {
+    ret = mDecoder.decodeRawFatal(inputs, filter);
+  } else {
+    ret = mDecoder.decodeRaw(inputs, filter, mOutputDigits, lumiPointsHBF1);
+  }
   if (ret == 1) {
     dummyOutput();
     return;
   }
   if (mDoDigits) {
     LOG(info) << "[CTPRawToDigitConverter - run] Writing " << mOutputDigits.size() << " digits. IR rejected:" << mDecoder.getIRRejected() << " TCR rejected:" << mDecoder.getTCRRejected();
-    ctx.outputs().snapshot(o2::framework::Output{"CTP", "DIGITS", 0, o2::framework::Lifetime::Timeframe}, mOutputDigits);
+    ctx.outputs().snapshot(o2::framework::Output{"CTP", "DIGITS", 0}, mOutputDigits);
   }
   if (mDoLumi) {
     uint32_t tfCountsT = 0;
@@ -157,7 +183,7 @@ void RawDecoderSpec::run(framework::ProcessingContext& ctx)
       mOutputLumiInfo.printInputs();
       LOGP(info, "Orbit {}: {}/{} counts inp1/inp2 in {}/{} HBFs -> lumi_inp1 = {:.3e}+-{:.3e} lumi_inp2 = {:.3e}+-{:.3e}", mOutputLumiInfo.orbit, mCountsT, mCountsV, mNHBIntegratedT, mNHBIntegratedV, mOutputLumiInfo.getLumi(), mOutputLumiInfo.getLumiError(), mOutputLumiInfo.getLumiFV0(), mOutputLumiInfo.getLumiFV0Error());
     }
-    ctx.outputs().snapshot(o2::framework::Output{"CTP", "LUMI", 0, o2::framework::Lifetime::Timeframe}, mOutputLumiInfo);
+    ctx.outputs().snapshot(o2::framework::Output{"CTP", "LUMI", 0}, mOutputLumiInfo);
   }
 }
 o2::framework::DataProcessorSpec o2::ctp::reco_workflow::getRawDecoderSpec(bool askDISTSTF, bool digits, bool lumi)
@@ -166,7 +192,7 @@ o2::framework::DataProcessorSpec o2::ctp::reco_workflow::getRawDecoderSpec(bool 
     throw std::runtime_error("all outputs were disabled");
   }
   std::vector<o2::framework::InputSpec> inputs;
-  inputs.emplace_back("TF", o2::framework::ConcreteDataTypeMatcher{"CTP", "RAWDATA"}, o2::framework::Lifetime::Optional);
+  inputs.emplace_back("TF", o2::framework::ConcreteDataTypeMatcher{"CTP", "RAWDATA"}, o2::framework::Lifetime::Timeframe);
   if (askDISTSTF) {
     inputs.emplace_back("stdDist", "FLP", "DISTSUBTIMEFRAME", 0, o2::framework::Lifetime::Timeframe);
   }
@@ -189,5 +215,7 @@ o2::framework::DataProcessorSpec o2::ctp::reco_workflow::getRawDecoderSpec(bool 
       {"lumi-inp1", o2::framework::VariantType::String, "TVX", {"The first input used for online lumi. Name in capital."}},
       {"lumi-inp2", o2::framework::VariantType::String, "VBA", {"The second input used for online lumi. Name in capital."}},
       {"use-verbose-mode", o2::framework::VariantType::Bool, false, {"Verbose logging"}},
+      {"max-input-size", o2::framework::VariantType::Int, 0, {"Do not process input if bigger than max size, 0 - do not check"}},
+      {"max-input-size-fatal", o2::framework::VariantType::Bool, false, {"If true issue fatal error otherwise error on;y"}},
       {"ctpinputs-decoding", o2::framework::VariantType::Bool, false, {"Inputs alignment: true - raw decoder - has to be compatible with CTF decoder: allowed options: 10,01,00"}}}};
 }

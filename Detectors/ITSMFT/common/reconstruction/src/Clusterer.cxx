@@ -14,7 +14,6 @@
 #include <algorithm>
 #include <TTree.h>
 #include "Framework/Logger.h"
-#include "ITSMFTBase/GeometryTGeo.h"
 #include "ITSMFTReconstruction/Clusterer.h"
 #include "SimulationDataFormat/MCTruthContainer.h"
 #include "CommonDataFormat/InteractionRecord.h"
@@ -36,6 +35,7 @@ void Clusterer::process(int nThreads, PixelReader& reader, CompClusCont* compClu
   }
   auto autoDecode = reader.getDecodeNextAuto();
   int rofcount{0};
+  o2::InteractionRecord lastIR{};
   do {
     if (autoDecode) {
       reader.setDecodeNextAuto(false); // internally do not autodecode
@@ -46,6 +46,15 @@ void Clusterer::process(int nThreads, PixelReader& reader, CompClusCont* compClu
     if (reader.getInteractionRecord().isDummy()) {
       continue; // No IR info was found
     }
+    if (!lastIR.isDummy() && lastIR >= reader.getInteractionRecord()) {
+      const int MaxErrLog = 2;
+      static int errLocCount = 0;
+      if (errLocCount++ < MaxErrLog) {
+        LOGP(warn, "Impossible ROF IR {}, does not exceed previous {}, discarding in clusterization", reader.getInteractionRecord().asString(), lastIR.asString());
+      }
+      continue;
+    }
+    lastIR = reader.getInteractionRecord();
     // pre-fetch all non-empty chips of current ROF
     ChipPixelData* curChipData = nullptr;
     mFiredChipsPtr.clear();

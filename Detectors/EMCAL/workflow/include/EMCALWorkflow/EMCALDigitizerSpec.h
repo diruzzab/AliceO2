@@ -23,11 +23,23 @@
 #include "EMCALSimulation/SDigitizer.h"
 #include "SimulationDataFormat/MCTruthContainer.h"
 #include <DetectorsBase/BaseDPLDigitizer.h>
+#include "EMCALSimulation/DigitizerTRU.h"
 
 class TChain;
 
 namespace o2
 {
+
+namespace steer
+{
+class MCKinematicsReader;
+}
+
+namespace ctp
+{
+class CTPConfiguration;
+}
+
 namespace emcal
 {
 class CalibLoader;
@@ -45,7 +57,7 @@ class DigitizerSpec final : public o2::base::BaseDPLDigitizer, public o2::framew
  public:
   using o2::base::BaseDPLDigitizer::init;
   /// \brief Constructor
-  DigitizerSpec(std::shared_ptr<CalibLoader> calibloader) : o2::base::BaseDPLDigitizer(o2::base::InitServices::GEOM), o2::framework::Task(), mCalibHandler(calibloader) {}
+  DigitizerSpec(std::shared_ptr<CalibLoader> calibloader, bool requireCTPInput) : o2::base::BaseDPLDigitizer(o2::base::InitServices::GEOM), o2::framework::Task(), mRequireCTPInput(requireCTPInput), mCalibHandler(calibloader) {}
 
   /// \brief Destructor
   ~DigitizerSpec() final = default;
@@ -70,16 +82,24 @@ class DigitizerSpec final : public o2::base::BaseDPLDigitizer, public o2::framew
  private:
   Bool_t mFinished = false;                   ///< Flag for digitization finished
   bool mIsConfigured = false;                 ///< Initialization status of the digitizer
+  bool mRunSDitizer = false;                  ///< Run SDigitization
+  bool mRequireCTPInput = false;              ///< Require CTP min. bias input
   Digitizer mDigitizer;                       ///< Digitizer object
   o2::emcal::SDigitizer mSumDigitizer;        ///< Summed digitizer
   std::shared_ptr<CalibLoader> mCalibHandler; ///< Handler of calibration objects
   std::vector<Hit> mHits;                     ///< Vector with input hits
   std::vector<TChain*> mSimChains;
+  o2::ctp::CTPConfiguration* mCTPConfig; ///< CTP configuration
+  o2::steer::MCKinematicsReader* mcReader; ///< reader to access MC collision information
+
+  DigitizerTRU mDigitizerTRU;             ///< Digitizer object TRU
+  o2::emcal::SDigitizer mSumDigitizerTRU; ///< Summed digitizer TRU
+  bool mRunDigitizerTRU = true;           ///< Run Digitizer TRU?
 };
 
 /// \brief Create new digitizer spec
 /// \return Digitizer spec
-o2::framework::DataProcessorSpec getEMCALDigitizerSpec(int channel, bool mctruth = true, bool useccdb = true);
+o2::framework::DataProcessorSpec getEMCALDigitizerSpec(int channel, bool requireCTPInput, bool mctruth = true, bool useccdb = true);
 
 } // namespace emcal
 } // end namespace o2

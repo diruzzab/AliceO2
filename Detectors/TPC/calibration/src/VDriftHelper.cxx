@@ -32,7 +32,7 @@ VDriftHelper::VDriftHelper()
   const auto& elpar = o2::tpc::ParameterElectronics::Instance();
   mVD.corrFact = 1.0;
   mVD.refVDrift = gaspar.DriftV;
-  mVD.refTimeOffset = detpar.DriftTimeOffset / elpar.ZbinWidth;
+  mVD.refTimeOffset = detpar.DriftTimeOffset * elpar.ZbinWidth; // convert time bins to \mus
   // was it imposed from the command line?
   mVD.creationTime = 1;                                                                                                         // just to be above 0
   if (o2::conf::ConfigurableParam::getProvenance("TPCGasParam.DriftV") == o2::conf::ConfigurableParam::EParamProvenance::kRT) { // we stick to this value
@@ -43,7 +43,8 @@ VDriftHelper::VDriftHelper()
   if (o2::conf::ConfigurableParam::getProvenance("TPCDetParam.DriftTimeOffset") == o2::conf::ConfigurableParam::EParamProvenance::kRT) { // we stick to this value
     mVD.creationTime = std::numeric_limits<long>::max();
     mForceParamOffset = true;
-    LOGP(info, "TPC dridt time offset was set from command line to {} mus ({} TB}, will neglect update from CCDB", mVD.refTimeOffset, detpar.DriftTimeOffset);
+    LOGP(info, "TPC dridt time offset was set from command line to {} mus ({} TB), will neglect update from CCDB",
+         mVD.refTimeOffset, detpar.DriftTimeOffset);
   }
 
   mUpdated = true;
@@ -54,6 +55,10 @@ VDriftHelper::VDriftHelper()
 void VDriftHelper::accountLaserCalibration(const LtrCalibData* calib, long fallBackTimeStamp)
 {
   if (!calib || mForceParamDrift) { // laser may set only DriftParam (the offset is 0)
+    return;
+  }
+  if (!calib->isValid()) {
+    LOGP(warn, "Ignoring invalid laser calibration (corrections: A-side={}, C-side={}, NTracks: A-side={} C-side={})", calib->dvCorrectionA, calib->dvCorrectionC, calib->nTracksA, calib->nTracksC);
     return;
   }
   // old entries of laser calib have no update time assigned
@@ -68,6 +73,7 @@ void VDriftHelper::accountLaserCalibration(const LtrCalibData* calib, long fallB
     mVDLaser.refVDrift = ref;
     mVDLaser.corrFact = 1. / corr;
     mVDLaser.creationTime = calib->creationTime;
+    mVDLaser.refTimeOffset = calib->refTimeOffset;
     mUpdated = true;
     mSource = Source::Laser;
     if (mMayRenormSrc & (0x1U << Source::Laser)) { // this was 1st setting?
@@ -78,7 +84,7 @@ void VDriftHelper::accountLaserCalibration(const LtrCalibData* calib, long fallB
       mMayRenormSrc &= ~(0x1U << Source::Laser); // unset MayRenorm
     } else if (ref != prevRef) {                 // we want to keep the same reference over the run, this may happen if run-time laser calibration is supplied
       LOGP(warn, "VDriftHelper: renorming updated TPC refVDrift={}/correction={} previous refVDrift {}, source: {}", mVDLaser.refVDrift, mVDLaser.corrFact, prevRef, getSourceName(mSource));
-      mVDLaser.normalizeOffset(prevRef);
+      mVDLaser.normalize(prevRef);
     }
   }
 }
@@ -112,7 +118,7 @@ void VDriftHelper::accountDriftCorrectionITSTPCTgl(const VDriftCorrFact* calib)
     }
     if (!mForceParamOffset && mVDTPCITSTgl.refTimeOffset != prevRefTOffs) { // we want to keep the same reference over the run, this should not happen!
       LOGP(warn, "VDriftHelper: renorming updated TPC refTimeOffset={}/correction={} previous refTimeOffset {}, source: {}", mVDTPCITSTgl.refTimeOffset, mVDTPCITSTgl.timeOffsetCorr, prevRefTOffs, getSourceName());
-      mVDTPCITSTgl.normalize(prevRefTOffs);
+      mVDTPCITSTgl.normalizeOffset(prevRefTOffs);
     }
   }
 }
@@ -133,6 +139,8 @@ void VDriftHelper::extractCCDBInputs(ProcessingContext& pc, bool laser, bool its
     // prefer among laser and tgl VDrift the one with the latest update time
     auto saveVD = mVD;
     mVD = mVDTPCITSTgl.creationTime < mVDLaser.creationTime ? mVDLaser : mVDTPCITSTgl;
+    auto& loserVD = mVDTPCITSTgl.creationTime < mVDLaser.creationTime ? mVDTPCITSTgl : mVDLaser;
+
     if (mForceParamDrift) {
       mVD.refVDrift = saveVD.refVDrift;
       mVD.corrFact = saveVD.corrFact;
@@ -143,13 +151,20 @@ void VDriftHelper::extractCCDBInputs(ProcessingContext& pc, bool laser, bool its
       mVD.timeOffsetCorr = 0.f;
     }
     mSource = mVDTPCITSTgl.creationTime < mVDLaser.creationTime ? Source::Laser : Source::ITSTPCTgl;
-    LOGP(info, "Will prefer TPC Drift from {} with time {} to {} with time {}",
-         SourceNames[int(mSource)], mVD.creationTime,
-         mSource == Source::Laser ? SourceNames[int(Source::ITSTPCTgl)] : SourceNames[int(Source::Laser)],
-         mSource == Source::Laser ? mVDTPCITSTgl.creationTime : mVDLaser.creationTime);
+    auto loseCTime = loserVD.creationTime;
+    loserVD = mVD; // override alternative VD to avoid normalization problems later
+    loserVD.creationTime = loseCTime;
+    std::string rep = fmt::format("Prefer TPC Drift from {} with time {} to {} with time {}",
+                                  SourceNames[int(mSource)], mVD.creationTime, mSource == Source::Laser ? SourceNames[int(Source::ITSTPCTgl)] : SourceNames[int(Source::Laser)],
+                                  mSource == Source::Laser ? mVDTPCITSTgl.creationTime : mVDLaser.creationTime);
     if (mForceParamDrift || mForceParamOffset) {
-      LOGP(info, "but {} is imposed from the command line", mForceParamDrift ? "VDrift" : "DriftTimeOffset");
+      std::string impos = mForceParamDrift ? "VDrift" : "";
+      if (mForceParamOffset) {
+        impos += mForceParamDrift ? " and DriftTimeOffset" : "DriftTimeOffset";
+      }
+      rep += fmt::format(" but {} imposed from command line", impos);
     }
+    LOGP(info, "{}", rep);
   }
 }
 

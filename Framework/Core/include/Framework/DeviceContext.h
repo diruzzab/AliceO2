@@ -16,6 +16,7 @@
 #define O2_FRAMEWORK_DEVICECONTEXT_H_
 
 typedef struct uv_timer_s uv_timer_t;
+typedef struct uv_signal_s uv_signal_t;
 
 namespace o2::framework
 {
@@ -27,8 +28,11 @@ struct ComputingQuotaStats;
 struct DeviceContext {
   ComputingQuotaStats* quotaStats = nullptr;
   uv_timer_t* gracePeriodTimer = nullptr;
+  uv_timer_t* dataProcessingGracePeriodTimer = nullptr;
+  uv_signal_t* sigusr1Handle = nullptr;
   int expectedRegionCallbacks = 0;
   int exitTransitionTimeout = 0;
+  int dataProcessingTimeout = 0;
 };
 
 } // namespace o2::framework
